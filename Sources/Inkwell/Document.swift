@@ -2,13 +2,13 @@ import AppKit
 import Metal
 
 final class Document: NSDocument {
-    let canvas: BitmapCanvas
+    let canvas: Canvas
     var onCanvasChanged: (() -> Void)?
 
     override init() {
         let device = MTLCreateSystemDefaultDevice()!
         do {
-            self.canvas = try BitmapCanvas(width: 2048, height: 1536, device: device)
+            self.canvas = try Canvas(width: 2048, height: 1536, device: device)
         } catch {
             fatalError("Could not create canvas: \(error)")
         }
@@ -18,7 +18,8 @@ final class Document: NSDocument {
 
     override class var autosavesInPlace: Bool { true }
 
-    // Phase 2 keeps PNG only. Phase 5 introduces the native .inkwell bundle.
+    // Phase 4 keeps PNG only; Phase 5 introduces the native .inkwell bundle that round-trips
+    // the layer tree losslessly.
     override class var readableTypes: [String] { ["public.png"] }
     override class var writableTypes: [String] { ["public.png"] }
 
@@ -37,29 +38,29 @@ final class Document: NSDocument {
         undoManager?.removeAllActions()
     }
 
-    /// Per-tile delta undo per ARCHITECTURE.md decision 9.
-    /// `before` describes the state of every tile that was affected by this stroke,
-    /// at the moment before the first stamp landed. `after` describes the same coords
-    /// at stroke commit. Either side may say "tile didn't exist" via `absentTiles`.
+    /// Per-layer per-tile delta undo. `before` and `after` describe the layer's tiles
+    /// at stroke start and stroke end respectively.
     func registerStrokeUndo(
-        before: BitmapCanvas.TileSnapshot,
-        after: BitmapCanvas.TileSnapshot
+        layerId: UUID,
+        before: BitmapLayer.TileSnapshot,
+        after: BitmapLayer.TileSnapshot
     ) {
         guard let undoManager, !before.isEmpty || !after.isEmpty else { return }
         undoManager.setActionName("Brush Stroke")
         undoManager.registerUndo(withTarget: self) { [weak self] _ in
-            self?.applyAndRegisterInverse(snapshot: before)
+            self?.applyAndRegisterInverse(layerId: layerId, snapshot: before)
         }
     }
 
-    private func applyAndRegisterInverse(snapshot: BitmapCanvas.TileSnapshot) {
+    private func applyAndRegisterInverse(layerId: UUID, snapshot: BitmapLayer.TileSnapshot) {
+        guard let layer = canvas.findLayer(layerId) as? BitmapLayer else { return }
         let affected = Set(snapshot.presentTiles.keys).union(snapshot.absentTiles)
-        let previous = canvas.snapshotTiles(affected)
-        canvas.applyTileSnapshot(snapshot)
+        let previous = layer.snapshotTiles(affected)
+        layer.applyTileSnapshot(snapshot)
         onCanvasChanged?()
         undoManager?.setActionName("Brush Stroke")
         undoManager?.registerUndo(withTarget: self) { [weak self] _ in
-            self?.applyAndRegisterInverse(snapshot: previous)
+            self?.applyAndRegisterInverse(layerId: layerId, snapshot: previous)
         }
     }
 }

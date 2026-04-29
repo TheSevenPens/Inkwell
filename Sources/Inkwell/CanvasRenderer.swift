@@ -15,12 +15,14 @@ private struct TileUniforms {
     var transform: simd_float4x4
     var tileOrigin: SIMD2<Float>
     var tileSize: Float
-    var _pad: Float = 0
+    var layerOpacity: Float
+    var blendMode: Int32
+    var _pad: Int32 = 0
 }
 
-/// Phase 2 renderer: composites the paper background plus all visible tiles per frame.
-/// Lazy viewport composition per ARCHITECTURE.md decision 4 — only tiles that intersect
-/// the visible viewport are drawn.
+/// Phase 4 renderer: walks the layer tree, composites visible tiles per layer
+/// using framebuffer fetch for blend-mode math. Pass-through groups: group
+/// opacity multiplies down through children; group blend mode is not isolated.
 final class CanvasRenderer {
     private static let metalSource = """
     #include <metal_stdlib>
@@ -48,9 +50,8 @@ final class CanvasRenderer {
     vertex PaperOut paper_vertex(uint vid [[vertex_id]],
                                  constant PaperUniforms &u [[buffer(0)]]) {
         float2 corner = kCanvasQuadCorners[vid];
-        float2 canvasPos = corner * u.canvasSize;
         PaperOut out;
-        out.position = u.transform * float4(canvasPos, 0, 1);
+        out.position = u.transform * float4(corner * u.canvasSize, 0, 1);
         return out;
     }
 
@@ -63,6 +64,8 @@ final class CanvasRenderer {
         float4x4 transform;
         float2 tileOrigin;
         float tileSize;
+        float layerOpacity;
+        int blendMode;
     };
 
     struct TileOut {
@@ -76,16 +79,48 @@ final class CanvasRenderer {
         float2 canvasPos = u.tileOrigin + corner * u.tileSize;
         TileOut out;
         out.position = u.transform * float4(canvasPos, 0, 1);
-        // Tile texture stored top-down, top row = high canvas Y.
-        // corner.y = 1 (top of clip / high canvas Y) should sample uv.y = 0 (top row).
         out.uv = float2(corner.x, 1.0 - corner.y);
         return out;
     }
 
     fragment float4 tile_fragment(TileOut in [[stage_in]],
                                   texture2d<float> tile [[texture(0)]],
-                                  sampler smp [[sampler(0)]]) {
-        return tile.sample(smp, in.uv);
+                                  sampler smp [[sampler(0)]],
+                                  constant TileUniforms &u [[buffer(0)]],
+                                  float4 dst [[color(0)]]) {
+        // Premultiplied source, attenuated by the layer's effective opacity.
+        float4 src = tile.sample(smp, in.uv) * u.layerOpacity;
+
+        // Un-premultiply for blend-mode math.
+        float3 srcUn = src.a > 0.0001 ? src.rgb / src.a : float3(0);
+        float3 dstUn = dst.a > 0.0001 ? dst.rgb / dst.a : float3(0);
+
+        float3 blendUn;
+        if (u.blendMode == 1) {
+            // Multiply
+            blendUn = srcUn * dstUn;
+        } else if (u.blendMode == 2) {
+            // Screen
+            blendUn = 1.0 - (1.0 - srcUn) * (1.0 - dstUn);
+        } else if (u.blendMode == 3) {
+            // Overlay
+            blendUn = float3(
+                dstUn.r < 0.5 ? 2.0 * srcUn.r * dstUn.r : 1.0 - 2.0 * (1.0 - srcUn.r) * (1.0 - dstUn.r),
+                dstUn.g < 0.5 ? 2.0 * srcUn.g * dstUn.g : 1.0 - 2.0 * (1.0 - srcUn.g) * (1.0 - dstUn.g),
+                dstUn.b < 0.5 ? 2.0 * srcUn.b * dstUn.b : 1.0 - 2.0 * (1.0 - srcUn.b) * (1.0 - dstUn.b)
+            );
+        } else {
+            // Normal
+            blendUn = srcUn;
+        }
+
+        // Non-isolated Porter-Duff "over" with blend applied to the overlap region.
+        // Inputs and outputs are premultiplied alpha.
+        float3 outRgb = src.rgb * (1.0 - dst.a)
+                      + dst.rgb * (1.0 - src.a)
+                      + blendUn * src.a * dst.a;
+        float outA = src.a + dst.a * (1.0 - src.a);
+        return float4(outRgb, outA);
     }
     """
 
@@ -94,7 +129,7 @@ final class CanvasRenderer {
     private let paperPipeline: any MTLRenderPipelineState
     private let tilePipeline: any MTLRenderPipelineState
     private let sampler: any MTLSamplerState
-    private weak var canvas: BitmapCanvas?
+    private weak var canvas: Canvas?
 
     init(
         device: any MTLDevice,
@@ -122,13 +157,8 @@ final class CanvasRenderer {
         tilePD.vertexFunction = tv
         tilePD.fragmentFunction = tf
         tilePD.colorAttachments[0].pixelFormat = viewColorPixelFormat
-        tilePD.colorAttachments[0].isBlendingEnabled = true
-        tilePD.colorAttachments[0].rgbBlendOperation = .add
-        tilePD.colorAttachments[0].alphaBlendOperation = .add
-        tilePD.colorAttachments[0].sourceRGBBlendFactor = .one
-        tilePD.colorAttachments[0].sourceAlphaBlendFactor = .one
-        tilePD.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        tilePD.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        // Shader does its own blending via framebuffer fetch; disable fixed-function blend.
+        tilePD.colorAttachments[0].isBlendingEnabled = false
         self.tilePipeline = try device.makeRenderPipelineState(descriptor: tilePD)
 
         let sd = MTLSamplerDescriptor()
@@ -142,7 +172,7 @@ final class CanvasRenderer {
         self.sampler = s
     }
 
-    func attach(canvas: BitmapCanvas) {
+    func attach(canvas: Canvas) {
         self.canvas = canvas
     }
 
@@ -165,30 +195,35 @@ final class CanvasRenderer {
         var paperUniforms = PaperUniforms(
             transform: viewTransform,
             canvasSize: SIMD2<Float>(Float(canvas.width), Float(canvas.height)),
-            paperColor: BitmapCanvas.paperColor
+            paperColor: Canvas.paperColor
         )
         encoder.setRenderPipelineState(paperPipeline)
         encoder.setVertexBytes(&paperUniforms, length: MemoryLayout<PaperUniforms>.size, index: 0)
         encoder.setFragmentBytes(&paperUniforms, length: MemoryLayout<PaperUniforms>.size, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
 
-        // Tiles
-        let visibleCoords = canvas.tilesIntersecting(visibleCanvasRect)
+        // Layer tree compositing
         encoder.setRenderPipelineState(tilePipeline)
         encoder.setFragmentSamplerState(sampler, index: 0)
-        for coord in visibleCoords {
-            guard let texture = canvas.tile(at: coord) else { continue }
-            var tu = TileUniforms(
-                transform: viewTransform,
-                tileOrigin: SIMD2<Float>(
-                    Float(coord.x * BitmapCanvas.tileSize),
-                    Float(coord.y * BitmapCanvas.tileSize)
-                ),
-                tileSize: Float(BitmapCanvas.tileSize)
-            )
-            encoder.setVertexBytes(&tu, length: MemoryLayout<TileUniforms>.size, index: 0)
-            encoder.setFragmentTexture(texture, index: 0)
-            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+        canvas.walkVisibleBitmapLayers { bitmap, effectiveOpacity, blendMode in
+            let visibleCoords = bitmap.tilesIntersecting(visibleCanvasRect)
+            for coord in visibleCoords {
+                guard let texture = bitmap.tile(at: coord) else { continue }
+                var tu = TileUniforms(
+                    transform: viewTransform,
+                    tileOrigin: SIMD2<Float>(
+                        Float(coord.x * Canvas.tileSize),
+                        Float(coord.y * Canvas.tileSize)
+                    ),
+                    tileSize: Float(Canvas.tileSize),
+                    layerOpacity: Float(effectiveOpacity),
+                    blendMode: blendMode.shaderIndex
+                )
+                encoder.setVertexBytes(&tu, length: MemoryLayout<TileUniforms>.size, index: 0)
+                encoder.setFragmentBytes(&tu, length: MemoryLayout<TileUniforms>.size, index: 0)
+                encoder.setFragmentTexture(texture, index: 0)
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+            }
         }
 
         encoder.endEncoding()

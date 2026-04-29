@@ -5,7 +5,7 @@ import simd
 
 final class CanvasView: MTKView {
     private weak var document: Document?
-    private let canvas: BitmapCanvas
+    private let canvas: Canvas
     private var renderer: CanvasRenderer?
     private var stampRenderer: StampRenderer?
 
@@ -13,7 +13,8 @@ final class CanvasView: MTKView {
     private var tipTexture: (any MTLTexture)?
 
     private var emitter: StrokeEmitter?
-    private var strokeBeforeSnapshot = BitmapCanvas.TileSnapshot.empty
+    private var strokeLayerId: UUID?
+    private var strokeBeforeSnapshot = BitmapLayer.TileSnapshot.empty
     private var strokeAffectedCoords: Set<TileCoord> = []
 
     private var lastSample: StylusSample?
@@ -83,6 +84,10 @@ final class CanvasView: MTKView {
         BrushPalette.shared.addObserver { [weak self] in
             self?.brushPaletteChanged()
         }
+
+        canvas.addObserver { [weak self] in
+            self?.needsDisplay = true
+        }
     }
 
     @available(*, unavailable)
@@ -109,7 +114,6 @@ final class CanvasView: MTKView {
 
     private func brushPaletteChanged() {
         rebuildTipTextureIfNeeded()
-        // Cursor reflects the new brush size
         if let win = window {
             win.invalidateCursorRects(for: self)
         }
@@ -118,8 +122,6 @@ final class CanvasView: MTKView {
 
     private func rebuildTipTextureIfNeeded() {
         let brush = BrushPalette.shared.activeBrush
-        // Generate one tip per (id + hardness). Hardness is the visual variable that
-        // changes the mask; size is applied at draw time.
         let key = "\(brush.id)|\(Int(brush.hardness * 1000))"
         if key != currentBrushID {
             tipTexture = brush.makeTipTexture(device: canvas.device)
@@ -147,9 +149,7 @@ final class CanvasView: MTKView {
         needsDisplay = true
     }
 
-    @objc func fitToWindow(_ sender: Any?) {
-        fitCanvasToView()
-    }
+    @objc func fitToWindow(_ sender: Any?) { fitCanvasToView() }
 
     @objc func actualSize(_ sender: Any?) {
         let cw = CGFloat(canvas.width)
@@ -214,6 +214,12 @@ final class CanvasView: MTKView {
     }
 
     private func beginStroke(at sample: StylusSample) {
+        // Pin the stroke to the active bitmap layer at stroke start.
+        guard let activeBitmap = canvas.activeBitmapLayer else {
+            // No bitmap layer selected (e.g., a group is active). Silently no-op.
+            return
+        }
+        strokeLayerId = activeBitmap.id
         strokeBeforeSnapshot = .empty
         strokeAffectedCoords = []
         rebuildTipTextureIfNeeded()
@@ -228,23 +234,22 @@ final class CanvasView: MTKView {
     }
 
     private func dispatchSample(_ sample: StylusSample) {
-        guard let stampRenderer, let tipTex = tipTexture else { return }
+        guard let stampRenderer, let tipTex = tipTexture,
+              let layerId = strokeLayerId,
+              let layer = canvas.findLayer(layerId) as? BitmapLayer else { return }
         let brush = BrushPalette.shared.activeBrush
 
-        // Pressure response.
         let sizePressure = lerp(1.0, brush.pressureToSize.evaluate(sample.pressure),
                                 brush.pressureToSizeStrength)
         let alphaPressure = lerp(1.0, brush.pressureToOpacity.evaluate(sample.pressure),
                                  brush.pressureToOpacityStrength)
 
-        // Tilt response.
         let tiltMag = min(1.0, sqrt(sample.tiltX * sample.tiltX + sample.tiltY * sample.tiltY))
         let tiltSizeFactor = 1.0 - brush.tiltSizeInfluence * tiltMag
         let tiltAngle: CGFloat = brush.tiltAngleFollow
             ? atan2(sample.tiltY, sample.tiltX)
             : 0
 
-        // Jitter.
         let sizeJitter = brush.sizeJitter > 0
             ? 1.0 + CGFloat.random(in: -brush.sizeJitter...brush.sizeJitter)
             : 1.0
@@ -255,7 +260,6 @@ final class CanvasView: MTKView {
         let radius = max(0.5, brush.radius * sizePressure * tiltSizeFactor * sizeJitter)
         let alpha = max(0, min(1, brush.opacity * alphaPressure * opacityJitter))
 
-        // Track dirty tiles.
         let halfBox = radius * 1.42
         let bbox = CGRect(
             x: sample.canvasPoint.x - halfBox,
@@ -263,10 +267,10 @@ final class CanvasView: MTKView {
             width: halfBox * 2,
             height: halfBox * 2
         )
-        let coords = canvas.tilesIntersecting(bbox)
+        let coords = layer.tilesIntersecting(bbox)
         let newCoords = coords.filter { !strokeAffectedCoords.contains($0) }
         if !newCoords.isEmpty {
-            let snap = canvas.snapshotTiles(Set(newCoords))
+            let snap = layer.snapshotTiles(Set(newCoords))
             for (k, v) in snap.presentTiles {
                 strokeBeforeSnapshot.presentTiles[k] = v
             }
@@ -282,27 +286,29 @@ final class CanvasView: MTKView {
             color: brush.color.simd,
             blendMode: brush.blendMode
         )
-        stampRenderer.applyStamp(dispatch, tipTexture: tipTex, canvas: canvas)
+        stampRenderer.applyStamp(dispatch, tipTexture: tipTex, layer: layer)
         needsDisplay = true
     }
 
     private func commitUndoIfNeeded() {
-        guard let document, !strokeAffectedCoords.isEmpty else { return }
-        let after = canvas.snapshotTiles(strokeAffectedCoords)
-        document.registerStrokeUndo(before: strokeBeforeSnapshot, after: after)
+        guard let document, let layerId = strokeLayerId,
+              !strokeAffectedCoords.isEmpty,
+              let layer = canvas.findLayer(layerId) as? BitmapLayer else { return }
+        let after = layer.snapshotTiles(strokeAffectedCoords)
+        document.registerStrokeUndo(layerId: layerId, before: strokeBeforeSnapshot, after: after)
         document.updateChangeCount(.changeDone)
         strokeBeforeSnapshot = .empty
         strokeAffectedCoords = []
+        strokeLayerId = nil
     }
 
-    // MARK: - Mouse-moved tracking (for cursor + airbrush)
+    // MARK: - Mouse-moved (cursor + airbrush)
 
     override func mouseMoved(with event: NSEvent) {
-        // Track even when not down — airbrush may need it once we start.
         lastSample = sampleFor(event: event)
     }
 
-    // MARK: - Airbrush continuous emission
+    // MARK: - Airbrush
 
     private func startAirbrushTimerIfNeeded() {
         let brush = BrushPalette.shared.activeBrush
@@ -320,7 +326,6 @@ final class CanvasView: MTKView {
 
     private func airbrushTick() {
         guard let sample = lastSample, emitter != nil else { return }
-        // Bypass the spacing emitter and emit directly at the cursor position.
         dispatchSample(sample)
     }
 
@@ -419,8 +424,6 @@ final class CanvasView: MTKView {
         return NSCursor(image: image, hotSpot: NSPoint(x: edge / 2, y: edge / 2))
     }
 }
-
-// MARK: - Helpers
 
 private func lerp(_ a: CGFloat, _ b: CGFloat, _ t: CGFloat) -> CGFloat {
     a + (b - a) * max(0, min(1, t))

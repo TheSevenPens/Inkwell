@@ -21,9 +21,8 @@ struct StampDispatch {
     var blendMode: BrushBlendMode
 }
 
-/// Phase 3 stamp pipeline: per-stamp render-to-texture into affected tiles.
-/// Two pipeline states — normal (premultiplied over) and erase (destination-out) —
-/// share the same shader; the blend state differs.
+/// Phase 4 stamp pipeline: writes into the active BitmapLayer's tile textures.
+/// Two pipelines (normal "over" + erase "destination-out") share one shader.
 final class StampRenderer {
     private static let metalSource = """
     #include <metal_stdlib>
@@ -74,8 +73,6 @@ final class StampRenderer {
                                    sampler smp [[sampler(0)]]) {
         float tipAlpha = tip.sample(smp, in.tipUV).a;
         float a = tipAlpha * u.stampAlpha;
-        // Premultiplied output. For erase, the GPU's destination-out blend uses the alpha
-        // and ignores the rgb anyway, so this single shader serves both modes.
         return float4(u.stampColor.rgb * a, a);
     }
     """
@@ -95,7 +92,6 @@ final class StampRenderer {
             throw StampError.shaderFunctionMissing
         }
 
-        // Normal: premultiplied "over"
         let normalPD = MTLRenderPipelineDescriptor()
         normalPD.vertexFunction = vfn
         normalPD.fragmentFunction = ffn
@@ -109,7 +105,6 @@ final class StampRenderer {
         normalPD.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
         self.normalPipeline = try device.makeRenderPipelineState(descriptor: normalPD)
 
-        // Erase: destination-out (dst * (1 - srcA))
         let erasePD = MTLRenderPipelineDescriptor()
         erasePD.vertexFunction = vfn
         erasePD.fragmentFunction = ffn
@@ -138,11 +133,9 @@ final class StampRenderer {
     func applyStamp(
         _ stamp: StampDispatch,
         tipTexture: any MTLTexture,
-        canvas: BitmapCanvas
+        layer: BitmapLayer
     ) -> Set<TileCoord> {
         let r = stamp.radius
-        // Rotated-tip bounding box: round tips don't change, but reserve sqrt(2) for
-        // future asymmetric tips to stay safe under rotation.
         let halfBox = r * 1.42
         let bbox = CGRect(
             x: stamp.canvasCenter.x - halfBox,
@@ -150,30 +143,30 @@ final class StampRenderer {
             width: halfBox * 2,
             height: halfBox * 2
         )
-        let coords = canvas.tilesIntersecting(bbox)
+        let coords = layer.tilesIntersecting(bbox)
         guard !coords.isEmpty,
               let cb = commandQueue.makeCommandBuffer() else { return [] }
         let pipeline = (stamp.blendMode == .erase) ? erasePipeline : normalPipeline
 
         var dirty: Set<TileCoord> = []
         for coord in coords {
-            let tile = canvas.ensureTile(at: coord)
+            let tile = layer.ensureTile(at: coord)
             let rpd = MTLRenderPassDescriptor()
             rpd.colorAttachments[0].texture = tile
             rpd.colorAttachments[0].loadAction = .load
             rpd.colorAttachments[0].storeAction = .store
             guard let encoder = cb.makeRenderCommandEncoder(descriptor: rpd) else { continue }
 
-            let cxLocal = Float(stamp.canvasCenter.x - CGFloat(coord.x * BitmapCanvas.tileSize))
-            let cyLocal = Float(stamp.canvasCenter.y - CGFloat(coord.y * BitmapCanvas.tileSize))
+            let cxLocal = Float(stamp.canvasCenter.x - CGFloat(coord.x * Canvas.tileSize))
+            let cyLocal = Float(stamp.canvasCenter.y - CGFloat(coord.y * Canvas.tileSize))
             var uniforms = StampUniforms(
                 stampCenterTilePixels: SIMD2<Float>(cxLocal, cyLocal),
                 stampRadiusPixels: Float(r),
                 stampAlpha: stamp.alpha,
                 stampColor: stamp.color,
                 tileSizePixels: SIMD2<Float>(
-                    Float(BitmapCanvas.tileSize),
-                    Float(BitmapCanvas.tileSize)
+                    Float(Canvas.tileSize),
+                    Float(Canvas.tileSize)
                 ),
                 stampAngleRadians: stamp.angleRadians
             )
