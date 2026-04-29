@@ -8,16 +8,25 @@ final class DocumentWindowController: NSWindowController {
         let layerPanel = LayerPanelView()
         layerPanel.attach(canvas: document.canvas)
 
-        let rightSidebar = NSStackView()
-        rightSidebar.orientation = .vertical
-        rightSidebar.spacing = 8
-        rightSidebar.alignment = .leading
-        rightSidebar.distribution = .fill
-        rightSidebar.translatesAutoresizingMaskIntoConstraints = false
-        rightSidebar.addArrangedSubview(inspector)
-        rightSidebar.addArrangedSubview(layerPanel)
-        inspector.setContentHuggingPriority(.defaultHigh, for: .vertical)
-        layerPanel.setContentHuggingPriority(.defaultLow, for: .vertical)
+        // Right sidebar: inspector at top (intrinsic height), layer panel below (fills).
+        let rightHost = NSView()
+        rightHost.translatesAutoresizingMaskIntoConstraints = false
+        rightHost.wantsLayer = true
+        rightHost.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+
+        rightHost.addSubview(inspector)
+        rightHost.addSubview(layerPanel)
+        inspector.translatesAutoresizingMaskIntoConstraints = false
+        layerPanel.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            inspector.topAnchor.constraint(equalTo: rightHost.topAnchor),
+            inspector.leadingAnchor.constraint(equalTo: rightHost.leadingAnchor),
+            inspector.trailingAnchor.constraint(equalTo: rightHost.trailingAnchor),
+            layerPanel.topAnchor.constraint(equalTo: inspector.bottomAnchor, constant: 4),
+            layerPanel.leadingAnchor.constraint(equalTo: rightHost.leadingAnchor),
+            layerPanel.trailingAnchor.constraint(equalTo: rightHost.trailingAnchor),
+            layerPanel.bottomAnchor.constraint(equalTo: rightHost.bottomAnchor)
+        ])
 
         let container = NSStackView()
         container.orientation = .horizontal
@@ -27,12 +36,12 @@ final class DocumentWindowController: NSWindowController {
         container.translatesAutoresizingMaskIntoConstraints = false
         container.addArrangedSubview(brushPicker)
         container.addArrangedSubview(canvasView)
-        container.addArrangedSubview(rightSidebar)
+        container.addArrangedSubview(rightHost)
 
         brushPicker.translatesAutoresizingMaskIntoConstraints = false
         canvasView.translatesAutoresizingMaskIntoConstraints = false
         brushPicker.widthAnchor.constraint(equalToConstant: 130).isActive = true
-        rightSidebar.widthAnchor.constraint(equalToConstant: 300).isActive = true
+        rightHost.widthAnchor.constraint(equalToConstant: 300).isActive = true
         canvasView.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let window = NSWindow(
@@ -53,8 +62,8 @@ final class DocumentWindowController: NSWindowController {
             brushPicker.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             canvasView.topAnchor.constraint(equalTo: container.topAnchor),
             canvasView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            rightSidebar.topAnchor.constraint(equalTo: container.topAnchor),
-            rightSidebar.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+            rightHost.topAnchor.constraint(equalTo: container.topAnchor),
+            rightHost.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
         window.contentView = host
         window.title = "Untitled"

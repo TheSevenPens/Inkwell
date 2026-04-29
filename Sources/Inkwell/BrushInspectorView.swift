@@ -34,7 +34,8 @@ final class BrushInspectorView: NSView {
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: topAnchor),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor)
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor)
         ])
 
         let title = NSTextField(labelWithString: "Brush Settings")
