@@ -7,7 +7,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "Inkwell",
-            path: "Sources/Inkwell"
+            path: "Sources/Inkwell",
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
         )
     ]
 )

@@ -1,6 +1,5 @@
 import AppKit
 
-@MainActor
 func installMainMenu() {
     let mainMenu = NSMenu()
 
@@ -87,6 +86,22 @@ func installMainMenu() {
     redoItem.keyEquivalentModifierMask = [.command, .shift]
     editItem.submenu = editMenu
     mainMenu.addItem(editItem)
+
+    // View menu
+    let viewItem = NSMenuItem()
+    let viewMenu = NSMenu(title: "View")
+    viewMenu.addItem(
+        withTitle: "Fit Window",
+        action: #selector(CanvasView.fitToWindow(_:)),
+        keyEquivalent: "0"
+    )
+    viewMenu.addItem(
+        withTitle: "Actual Size",
+        action: #selector(CanvasView.actualSize(_:)),
+        keyEquivalent: "1"
+    )
+    viewItem.submenu = viewMenu
+    mainMenu.addItem(viewItem)
 
     NSApp.mainMenu = mainMenu
 }
