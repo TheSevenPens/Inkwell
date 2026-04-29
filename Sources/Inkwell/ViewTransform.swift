@@ -37,24 +37,26 @@ struct ViewTransform {
         )
     }
 
-    /// Build a clip-space transform for a canvas-relative quad whose corners are at uv (0,0), (1,0), (1,1), (0,1).
-    /// Translates: canvas-uv → canvas pixel coords → view points → drawable pixels → clip space.
-    func clipTransform(viewBoundsPt: CGSize, viewDrawablePx: CGSize, canvasSize: CGSize) -> simd_float4x4 {
+    /// Build a transform from canvas pixel coords directly to clip space.
+    /// Used by both the paper-background pass (full canvas size) and per-tile draws
+    /// (tile origin + corner * tile size).
+    func clipTransform(viewBoundsPt: CGSize, viewDrawablePx: CGSize) -> simd_float4x4 {
         let pxPerPt = (viewBoundsPt.width > 0)
             ? Float(viewDrawablePx.width / viewBoundsPt.width)
             : 1.0
-        let canvasW = Float(canvasSize.width)
-        let canvasH = Float(canvasSize.height)
         let s = Float(scale)
         let ox = Float(offset.x)
         let oy = Float(offset.y)
         let drawableW = Float(viewDrawablePx.width)
         let drawableH = Float(viewDrawablePx.height)
 
-        // clip_x = (2 * pxPerPt * canvasW * s / drawableW) * uv.x + (2 * pxPerPt * ox / drawableW - 1)
-        // clip_y = (2 * pxPerPt * canvasH * s / drawableH) * uv.y + (2 * pxPerPt * oy / drawableH - 1)
-        let mx = 2.0 * pxPerPt * canvasW * s / drawableW
-        let my = 2.0 * pxPerPt * canvasH * s / drawableH
+        // canvas_pixel_x → window_pt: ox + canvas_pixel_x * s
+        // window_pt → drawable_px: * pxPerPt
+        // drawable_px → clip: 2 * px / drawableSize - 1
+        //
+        // clip_x = (2 * pxPerPt * s / drawableW) * canvas_pixel_x + (2 * pxPerPt * ox / drawableW - 1)
+        let mx = 2.0 * pxPerPt * s / drawableW
+        let my = 2.0 * pxPerPt * s / drawableH
         let bx = 2.0 * pxPerPt * ox / drawableW - 1.0
         let by = 2.0 * pxPerPt * oy / drawableH - 1.0
 

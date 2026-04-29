@@ -3,28 +3,30 @@ import Metal
 import MetalKit
 import simd
 
-private struct CanvasUniforms {
+private struct PaperUniforms {
     var transform: simd_float4x4
+    var canvasSize: SIMD2<Float>
+    var _pad0: Float = 0
+    var _pad1: Float = 0
+    var paperColor: SIMD4<Float>
 }
 
-/// Phase 1 renderer: uploads the BitmapCanvas pixels to a single MTLTexture and draws
-/// it as a textured quad per frame, with the current view transform.
-/// Phase 2 will replace whole-texture upload with per-tile upload.
+private struct TileUniforms {
+    var transform: simd_float4x4
+    var tileOrigin: SIMD2<Float>
+    var tileSize: Float
+    var _pad: Float = 0
+}
+
+/// Phase 2 renderer: composites the paper background plus all visible tiles per frame.
+/// Lazy viewport composition per ARCHITECTURE.md decision 4 — only tiles that intersect
+/// the visible viewport are drawn.
 final class CanvasRenderer {
-    private static let metalSource: String = """
+    private static let metalSource = """
     #include <metal_stdlib>
     using namespace metal;
 
-    struct CanvasUniforms {
-        float4x4 transform;
-    };
-
-    struct VertexOut {
-        float4 position [[position]];
-        float2 uv;
-    };
-
-    constant float2 kQuadCorners[6] = {
+    constant float2 kCanvasQuadCorners[6] = {
         float2(0.0, 0.0),
         float2(1.0, 0.0),
         float2(1.0, 1.0),
@@ -33,57 +35,108 @@ final class CanvasRenderer {
         float2(0.0, 1.0)
     };
 
-    vertex VertexOut canvas_vertex(uint vid [[vertex_id]],
-                                   constant CanvasUniforms &uniforms [[buffer(0)]]) {
-        float2 corner = kQuadCorners[vid];
-        VertexOut out;
-        out.position = uniforms.transform * float4(corner, 0.0, 1.0);
-        // CGContext stores top-of-image at the END of the byte buffer; texture origin is
-        // top-left of stored bytes. Flip uv.y so canvas-top displays at clip-top.
+    struct PaperUniforms {
+        float4x4 transform;
+        float2 canvasSize;
+        float4 paperColor;
+    };
+
+    struct PaperOut {
+        float4 position [[position]];
+    };
+
+    vertex PaperOut paper_vertex(uint vid [[vertex_id]],
+                                 constant PaperUniforms &u [[buffer(0)]]) {
+        float2 corner = kCanvasQuadCorners[vid];
+        float2 canvasPos = corner * u.canvasSize;
+        PaperOut out;
+        out.position = u.transform * float4(canvasPos, 0, 1);
+        return out;
+    }
+
+    fragment float4 paper_fragment(PaperOut in [[stage_in]],
+                                   constant PaperUniforms &u [[buffer(0)]]) {
+        return u.paperColor;
+    }
+
+    struct TileUniforms {
+        float4x4 transform;
+        float2 tileOrigin;
+        float tileSize;
+    };
+
+    struct TileOut {
+        float4 position [[position]];
+        float2 uv;
+    };
+
+    vertex TileOut tile_vertex(uint vid [[vertex_id]],
+                               constant TileUniforms &u [[buffer(0)]]) {
+        float2 corner = kCanvasQuadCorners[vid];
+        float2 canvasPos = u.tileOrigin + corner * u.tileSize;
+        TileOut out;
+        out.position = u.transform * float4(canvasPos, 0, 1);
+        // Tile texture stored top-down, top row = high canvas Y.
+        // corner.y = 1 (top of clip / high canvas Y) should sample uv.y = 0 (top row).
         out.uv = float2(corner.x, 1.0 - corner.y);
         return out;
     }
 
-    fragment float4 canvas_fragment(VertexOut in [[stage_in]],
-                                    texture2d<float> canvas [[texture(0)]],
-                                    sampler smp [[sampler(0)]]) {
-        return canvas.sample(smp, in.uv);
+    fragment float4 tile_fragment(TileOut in [[stage_in]],
+                                  texture2d<float> tile [[texture(0)]],
+                                  sampler smp [[sampler(0)]]) {
+        return tile.sample(smp, in.uv);
     }
     """
 
     private let device: any MTLDevice
     private let commandQueue: any MTLCommandQueue
-    private let pipelineState: any MTLRenderPipelineState
+    private let paperPipeline: any MTLRenderPipelineState
+    private let tilePipeline: any MTLRenderPipelineState
     private let sampler: any MTLSamplerState
-    private var canvasTexture: (any MTLTexture)?
     private weak var canvas: BitmapCanvas?
-    private var textureNeedsUpload = true
 
-    init(device: any MTLDevice, viewColorPixelFormat: MTLPixelFormat) throws {
+    init(
+        device: any MTLDevice,
+        commandQueue: any MTLCommandQueue,
+        viewColorPixelFormat: MTLPixelFormat
+    ) throws {
         self.device = device
-        guard let queue = device.makeCommandQueue() else {
-            throw RendererError.commandQueueFailed
-        }
-        self.commandQueue = queue
+        self.commandQueue = commandQueue
 
         let library = try device.makeLibrary(source: Self.metalSource, options: nil)
-        guard let vertexFn = library.makeFunction(name: "canvas_vertex"),
-              let fragmentFn = library.makeFunction(name: "canvas_fragment") else {
+        guard let pv = library.makeFunction(name: "paper_vertex"),
+              let pf = library.makeFunction(name: "paper_fragment"),
+              let tv = library.makeFunction(name: "tile_vertex"),
+              let tf = library.makeFunction(name: "tile_fragment") else {
             throw RendererError.shaderFunctionMissing
         }
 
-        let pipelineDescriptor = MTLRenderPipelineDescriptor()
-        pipelineDescriptor.vertexFunction = vertexFn
-        pipelineDescriptor.fragmentFunction = fragmentFn
-        pipelineDescriptor.colorAttachments[0].pixelFormat = viewColorPixelFormat
-        self.pipelineState = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
+        let paperPD = MTLRenderPipelineDescriptor()
+        paperPD.vertexFunction = pv
+        paperPD.fragmentFunction = pf
+        paperPD.colorAttachments[0].pixelFormat = viewColorPixelFormat
+        self.paperPipeline = try device.makeRenderPipelineState(descriptor: paperPD)
 
-        let samplerDescriptor = MTLSamplerDescriptor()
-        samplerDescriptor.minFilter = .linear
-        samplerDescriptor.magFilter = .linear
-        samplerDescriptor.sAddressMode = .clampToEdge
-        samplerDescriptor.tAddressMode = .clampToEdge
-        guard let s = device.makeSamplerState(descriptor: samplerDescriptor) else {
+        let tilePD = MTLRenderPipelineDescriptor()
+        tilePD.vertexFunction = tv
+        tilePD.fragmentFunction = tf
+        tilePD.colorAttachments[0].pixelFormat = viewColorPixelFormat
+        tilePD.colorAttachments[0].isBlendingEnabled = true
+        tilePD.colorAttachments[0].rgbBlendOperation = .add
+        tilePD.colorAttachments[0].alphaBlendOperation = .add
+        tilePD.colorAttachments[0].sourceRGBBlendFactor = .one
+        tilePD.colorAttachments[0].sourceAlphaBlendFactor = .one
+        tilePD.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        tilePD.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        self.tilePipeline = try device.makeRenderPipelineState(descriptor: tilePD)
+
+        let sd = MTLSamplerDescriptor()
+        sd.minFilter = .linear
+        sd.magFilter = .linear
+        sd.sAddressMode = .clampToEdge
+        sd.tAddressMode = .clampToEdge
+        guard let s = device.makeSamplerState(descriptor: sd) else {
             throw RendererError.samplerFailed
         }
         self.sampler = s
@@ -91,64 +144,63 @@ final class CanvasRenderer {
 
     func attach(canvas: BitmapCanvas) {
         self.canvas = canvas
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba8Unorm,
-            width: canvas.width,
-            height: canvas.height,
-            mipmapped: false
-        )
-        descriptor.usage = [.shaderRead]
-        canvasTexture = device.makeTexture(descriptor: descriptor)
-        textureNeedsUpload = true
     }
 
-    func canvasDidChange() {
-        textureNeedsUpload = true
-    }
-
-    func render(in view: MTKView, transform: simd_float4x4) {
-        guard let canvas, let texture = canvasTexture,
+    func render(
+        in view: MTKView,
+        viewTransform: simd_float4x4,
+        visibleCanvasRect: CGRect
+    ) {
+        guard let canvas,
               let drawable = view.currentDrawable,
-              let renderPassDescriptor = view.currentRenderPassDescriptor,
-              let commandBuffer = commandQueue.makeCommandBuffer() else {
-            return
-        }
+              let rpd = view.currentRenderPassDescriptor,
+              let cb = commandQueue.makeCommandBuffer() else { return }
 
-        if textureNeedsUpload {
-            uploadCanvasToTexture(canvas: canvas, texture: texture)
-            textureNeedsUpload = false
-        }
+        rpd.colorAttachments[0].loadAction = .clear
+        rpd.colorAttachments[0].clearColor = MTLClearColor(red: 0.18, green: 0.18, blue: 0.20, alpha: 1.0)
 
-        renderPassDescriptor.colorAttachments[0].loadAction = .clear
-        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0.78, green: 0.78, blue: 0.80, alpha: 1.0)
+        guard let encoder = cb.makeRenderCommandEncoder(descriptor: rpd) else { return }
 
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
-            return
-        }
-
-        var uniforms = CanvasUniforms(transform: transform)
-        encoder.setRenderPipelineState(pipelineState)
-        encoder.setVertexBytes(&uniforms, length: MemoryLayout<CanvasUniforms>.size, index: 0)
-        encoder.setFragmentTexture(texture, index: 0)
-        encoder.setFragmentSamplerState(sampler, index: 0)
+        // Paper background
+        var paperUniforms = PaperUniforms(
+            transform: viewTransform,
+            canvasSize: SIMD2<Float>(Float(canvas.width), Float(canvas.height)),
+            paperColor: BitmapCanvas.paperColor
+        )
+        encoder.setRenderPipelineState(paperPipeline)
+        encoder.setVertexBytes(&paperUniforms, length: MemoryLayout<PaperUniforms>.size, index: 0)
+        encoder.setFragmentBytes(&paperUniforms, length: MemoryLayout<PaperUniforms>.size, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
-        encoder.endEncoding()
-        commandBuffer.present(drawable)
-        commandBuffer.commit()
-    }
 
-    private func uploadCanvasToTexture(canvas: BitmapCanvas, texture: any MTLTexture) {
-        guard let data = canvas.context.data else { return }
-        let region = MTLRegionMake2D(0, 0, canvas.width, canvas.height)
-        texture.replace(region: region, mipmapLevel: 0, withBytes: data, bytesPerRow: canvas.bytesPerRow)
+        // Tiles
+        let visibleCoords = canvas.tilesIntersecting(visibleCanvasRect)
+        encoder.setRenderPipelineState(tilePipeline)
+        encoder.setFragmentSamplerState(sampler, index: 0)
+        for coord in visibleCoords {
+            guard let texture = canvas.tile(at: coord) else { continue }
+            var tu = TileUniforms(
+                transform: viewTransform,
+                tileOrigin: SIMD2<Float>(
+                    Float(coord.x * BitmapCanvas.tileSize),
+                    Float(coord.y * BitmapCanvas.tileSize)
+                ),
+                tileSize: Float(BitmapCanvas.tileSize)
+            )
+            encoder.setVertexBytes(&tu, length: MemoryLayout<TileUniforms>.size, index: 0)
+            encoder.setFragmentTexture(texture, index: 0)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+        }
+
+        encoder.endEncoding()
+        cb.present(drawable)
+        cb.commit()
     }
 
     enum RendererError: Error, LocalizedError {
-        case commandQueueFailed, shaderFunctionMissing, samplerFailed
+        case shaderFunctionMissing, samplerFailed
 
         var errorDescription: String? {
             switch self {
-            case .commandQueueFailed: "Could not create Metal command queue."
             case .shaderFunctionMissing: "Could not load shader functions."
             case .samplerFailed: "Could not create sampler state."
             }

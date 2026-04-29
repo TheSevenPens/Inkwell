@@ -7,11 +7,13 @@ final class CanvasView: MTKView {
     private weak var document: Document?
     private let canvas: BitmapCanvas
     private var renderer: CanvasRenderer?
+    private var stampRenderer: StampRenderer?
     private var brush = Brush()
-    private var stamp: CGImage
+    private var tipTexture: (any MTLTexture)?
 
     private var emitter: StrokeEmitter?
-    private var preStrokeSnapshot: Data?
+    private var strokeBeforeSnapshot = BitmapCanvas.TileSnapshot.empty
+    private var strokeAffectedCoords: Set<TileCoord> = []
 
     private var viewTransform = ViewTransform()
     private var hasFitOnce = false
@@ -24,10 +26,9 @@ final class CanvasView: MTKView {
     init(document: Document) {
         self.document = document
         self.canvas = document.canvas
-        let device = MTLCreateSystemDefaultDevice()!
+        let device = canvas.device
         let brush = Brush()
         self.brush = brush
-        self.stamp = brush.makeStampImage()
         super.init(frame: .zero, device: device)
 
         self.colorPixelFormat = .bgra8Unorm
@@ -37,12 +38,27 @@ final class CanvasView: MTKView {
         self.delegate = self
 
         do {
-            let r = try CanvasRenderer(device: device, viewColorPixelFormat: self.colorPixelFormat)
+            let r = try CanvasRenderer(
+                device: device,
+                commandQueue: canvas.commandQueue,
+                viewColorPixelFormat: self.colorPixelFormat
+            )
             r.attach(canvas: canvas)
             self.renderer = r
         } catch {
             NSLog("CanvasRenderer init failed: \(error)")
         }
+
+        do {
+            self.stampRenderer = try StampRenderer(
+                device: device,
+                commandQueue: canvas.commandQueue
+            )
+        } catch {
+            NSLog("StampRenderer init failed: \(error)")
+        }
+
+        self.tipTexture = brush.makeTipTexture(device: device)
 
         let trackingArea = NSTrackingArea(
             rect: .zero,
@@ -59,7 +75,6 @@ final class CanvasView: MTKView {
         addTrackingArea(trackingArea)
 
         document.onCanvasChanged = { [weak self] in
-            self?.renderer?.canvasDidChange()
             self?.needsDisplay = true
         }
     }
@@ -84,7 +99,7 @@ final class CanvasView: MTKView {
         }
     }
 
-    // MARK: - View transform helpers
+    // MARK: - View transform
 
     private func fitCanvasToView() {
         guard bounds.width > 8, bounds.height > 8 else { return }
@@ -126,63 +141,90 @@ final class CanvasView: MTKView {
         return viewTransform.windowToCanvas(local)
     }
 
+    /// Canvas-pixel rect currently visible in the viewport, used for lazy compositing.
+    private func visibleCanvasRect() -> CGRect {
+        let w = bounds.width
+        let h = bounds.height
+        let p00 = viewTransform.windowToCanvas(CGPoint(x: 0, y: 0))
+        let p10 = viewTransform.windowToCanvas(CGPoint(x: w, y: 0))
+        let p01 = viewTransform.windowToCanvas(CGPoint(x: 0, y: h))
+        let p11 = viewTransform.windowToCanvas(CGPoint(x: w, y: h))
+        let minX = min(p00.x, p10.x, p01.x, p11.x)
+        let maxX = max(p00.x, p10.x, p01.x, p11.x)
+        let minY = min(p00.y, p10.y, p01.y, p11.y)
+        let maxY = max(p00.y, p10.y, p01.y, p11.y)
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
     // MARK: - Mouse / stylus
 
     override func mouseDown(with event: NSEvent) {
-        if spaceHeld {
-            beginPan(with: event)
-            return
-        }
+        if spaceHeld { beginPan(with: event); return }
         beginStroke(at: canvasPointForEvent(event))
     }
 
     override func mouseDragged(with event: NSEvent) {
-        if isPanning {
-            continuePan(with: event)
-            return
-        }
-        continueStroke(to: canvasPointForEvent(event))
+        if isPanning { continuePan(with: event); return }
+        emitter?.continueTo(canvasPointForEvent(event))
     }
 
     override func mouseUp(with event: NSEvent) {
-        if isPanning {
-            endPan(with: event)
-            return
-        }
-        endStroke(at: canvasPointForEvent(event))
-    }
-
-    private func beginStroke(at point: CGPoint) {
-        preStrokeSnapshot = canvas.snapshotPixels()
-        let e = StrokeEmitter(brush: brush, stamp: stamp, canvas: canvas)
-        e.begin(at: point)
-        emitter = e
-        markDirty()
-    }
-
-    private func continueStroke(to point: CGPoint) {
-        emitter?.continueTo(point)
-        markDirty()
-    }
-
-    private func endStroke(at point: CGPoint) {
-        emitter?.end(at: point)
+        if isPanning { endPan(with: event); return }
+        emitter?.end(at: canvasPointForEvent(event))
         emitter = nil
-        markDirty()
         commitUndoIfNeeded()
     }
 
-    private func commitUndoIfNeeded() {
-        guard let document, let before = preStrokeSnapshot else { return }
-        let after = canvas.snapshotPixels()
-        document.registerStrokeUndo(before: before, after: after)
-        document.updateChangeCount(.changeDone)
-        preStrokeSnapshot = nil
+    private func beginStroke(at point: CGPoint) {
+        strokeBeforeSnapshot = .empty
+        strokeAffectedCoords = []
+        let e = StrokeEmitter(brush: brush) { [weak self] p in
+            self?.emitStamp(at: p)
+        }
+        e.begin(at: point)
+        emitter = e
     }
 
-    private func markDirty() {
-        renderer?.canvasDidChange()
+    private func emitStamp(at canvasPoint: CGPoint) {
+        guard let stampRenderer, let tipTex = tipTexture else { return }
+        let radius = brush.radius
+        let bbox = CGRect(
+            x: canvasPoint.x - radius,
+            y: canvasPoint.y - radius,
+            width: radius * 2,
+            height: radius * 2
+        )
+        let coords = canvas.tilesIntersecting(bbox)
+
+        // Snapshot before-state of any newly-affected tile, before the stamp lands.
+        let newCoords = coords.filter { !strokeAffectedCoords.contains($0) }
+        if !newCoords.isEmpty {
+            let snap = canvas.snapshotTiles(Set(newCoords))
+            for (k, v) in snap.presentTiles {
+                strokeBeforeSnapshot.presentTiles[k] = v
+            }
+            strokeBeforeSnapshot.absentTiles.formUnion(snap.absentTiles)
+            strokeAffectedCoords.formUnion(newCoords)
+        }
+
+        stampRenderer.applyStamp(
+            at: canvasPoint,
+            tipTexture: tipTex,
+            radiusInCanvasPixels: radius,
+            color: brush.colorAsSIMD,
+            alpha: Float(brush.opacity),
+            canvas: canvas
+        )
         needsDisplay = true
+    }
+
+    private func commitUndoIfNeeded() {
+        guard let document, !strokeAffectedCoords.isEmpty else { return }
+        let after = canvas.snapshotTiles(strokeAffectedCoords)
+        document.registerStrokeUndo(before: strokeBeforeSnapshot, after: after)
+        document.updateChangeCount(.changeDone)
+        strokeBeforeSnapshot = .empty
+        strokeAffectedCoords = []
     }
 
     // MARK: - Pan
@@ -289,12 +331,14 @@ extension CanvasView: MTKViewDelegate {
         guard let renderer else { return }
         let boundsPt = bounds.size
         let drawablePx = view.drawableSize
-        let canvasSize = CGSize(width: canvas.width, height: canvas.height)
         let matrix = viewTransform.clipTransform(
             viewBoundsPt: boundsPt,
-            viewDrawablePx: drawablePx,
-            canvasSize: canvasSize
+            viewDrawablePx: drawablePx
         )
-        renderer.render(in: view, transform: matrix)
+        renderer.render(
+            in: view,
+            viewTransform: matrix,
+            visibleCanvasRect: visibleCanvasRect()
+        )
     }
 }
