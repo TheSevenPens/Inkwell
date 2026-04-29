@@ -5,3 +5,10 @@
 .LSOverride
 .Spotlight-V100
 .Trashes
+
+# Swift / SwiftPM
+.build/
+build/
+.swiftpm/
+Package.resolved
+*.xcodeproj/
