@@ -8,17 +8,22 @@ private struct StampUniforms {
     var stampAlpha: Float
     var stampColor: SIMD4<Float>
     var tileSizePixels: SIMD2<Float>
+    var stampAngleRadians: Float
+    var _pad: Float = 0
 }
 
-/// Phase 2 stamp pipeline: one render pass per (stamp × affected tile).
-/// The fragment shader samples the tip mask, modulates by brush color and stamp alpha,
-/// and outputs premultiplied RGBA. Metal blend state composes "over" into the tile texture.
-///
-/// PLAN.md Phase 2 calls for "Stamp rasterizer writes into tile textures via Metal compute
-/// shader." We use render-to-texture instead of a compute kernel because Metal's blend state
-/// gives us correct premultiplied-over compositing for free; a compute kernel would need to
-/// implement the blend manually. The behavior is identical and the dispatch cost is comparable
-/// at our stamp counts.
+struct StampDispatch {
+    var canvasCenter: CGPoint
+    var radius: CGFloat
+    var alpha: Float
+    var angleRadians: Float
+    var color: SIMD4<Float>
+    var blendMode: BrushBlendMode
+}
+
+/// Phase 3 stamp pipeline: per-stamp render-to-texture into affected tiles.
+/// Two pipeline states — normal (premultiplied over) and erase (destination-out) —
+/// share the same shader; the blend state differs.
 final class StampRenderer {
     private static let metalSource = """
     #include <metal_stdlib>
@@ -39,6 +44,7 @@ final class StampRenderer {
         float stampAlpha;
         float4 stampColor;
         float2 tileSizePixels;
+        float stampAngleRadians;
     };
 
     struct StampOut {
@@ -50,10 +56,11 @@ final class StampRenderer {
                                  constant StampUniforms &u [[buffer(0)]]) {
         float2 corner = kStampQuadCorners[vid];
         float diameter = u.stampRadiusPixels * 2.0;
-        float2 tilePos = u.stampCenterTilePixels + (corner - 0.5) * diameter;
-        // Map tile-local pixel coords (canvas Y-up) to NDC.
-        // Render-to-texture: NDC y = +1 lands at the top of stored texture data,
-        // which matches our convention of top-row-of-data == high canvas Y.
+        float2 offset = (corner - 0.5) * diameter;
+        float c = cos(u.stampAngleRadians);
+        float s = sin(u.stampAngleRadians);
+        float2 rotated = float2(c * offset.x - s * offset.y, s * offset.x + c * offset.y);
+        float2 tilePos = u.stampCenterTilePixels + rotated;
         float2 ndc = (tilePos / u.tileSizePixels) * 2.0 - 1.0;
         StampOut out;
         out.position = float4(ndc, 0, 1);
@@ -67,13 +74,16 @@ final class StampRenderer {
                                    sampler smp [[sampler(0)]]) {
         float tipAlpha = tip.sample(smp, in.tipUV).a;
         float a = tipAlpha * u.stampAlpha;
+        // Premultiplied output. For erase, the GPU's destination-out blend uses the alpha
+        // and ignores the rgb anyway, so this single shader serves both modes.
         return float4(u.stampColor.rgb * a, a);
     }
     """
 
     private let device: any MTLDevice
     private let commandQueue: any MTLCommandQueue
-    private let pipelineState: any MTLRenderPipelineState
+    private let normalPipeline: any MTLRenderPipelineState
+    private let erasePipeline: any MTLRenderPipelineState
     private let sampler: any MTLSamplerState
 
     init(device: any MTLDevice, commandQueue: any MTLCommandQueue) throws {
@@ -84,18 +94,34 @@ final class StampRenderer {
               let ffn = library.makeFunction(name: "stamp_fragment") else {
             throw StampError.shaderFunctionMissing
         }
-        let pd = MTLRenderPipelineDescriptor()
-        pd.vertexFunction = vfn
-        pd.fragmentFunction = ffn
-        pd.colorAttachments[0].pixelFormat = .rgba8Unorm
-        pd.colorAttachments[0].isBlendingEnabled = true
-        pd.colorAttachments[0].rgbBlendOperation = .add
-        pd.colorAttachments[0].alphaBlendOperation = .add
-        pd.colorAttachments[0].sourceRGBBlendFactor = .one
-        pd.colorAttachments[0].sourceAlphaBlendFactor = .one
-        pd.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        pd.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        self.pipelineState = try device.makeRenderPipelineState(descriptor: pd)
+
+        // Normal: premultiplied "over"
+        let normalPD = MTLRenderPipelineDescriptor()
+        normalPD.vertexFunction = vfn
+        normalPD.fragmentFunction = ffn
+        normalPD.colorAttachments[0].pixelFormat = .rgba8Unorm
+        normalPD.colorAttachments[0].isBlendingEnabled = true
+        normalPD.colorAttachments[0].rgbBlendOperation = .add
+        normalPD.colorAttachments[0].alphaBlendOperation = .add
+        normalPD.colorAttachments[0].sourceRGBBlendFactor = .one
+        normalPD.colorAttachments[0].sourceAlphaBlendFactor = .one
+        normalPD.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        normalPD.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        self.normalPipeline = try device.makeRenderPipelineState(descriptor: normalPD)
+
+        // Erase: destination-out (dst * (1 - srcA))
+        let erasePD = MTLRenderPipelineDescriptor()
+        erasePD.vertexFunction = vfn
+        erasePD.fragmentFunction = ffn
+        erasePD.colorAttachments[0].pixelFormat = .rgba8Unorm
+        erasePD.colorAttachments[0].isBlendingEnabled = true
+        erasePD.colorAttachments[0].rgbBlendOperation = .add
+        erasePD.colorAttachments[0].alphaBlendOperation = .add
+        erasePD.colorAttachments[0].sourceRGBBlendFactor = .zero
+        erasePD.colorAttachments[0].sourceAlphaBlendFactor = .zero
+        erasePD.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        erasePD.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        self.erasePipeline = try device.makeRenderPipelineState(descriptor: erasePD)
 
         let sd = MTLSamplerDescriptor()
         sd.minFilter = .linear
@@ -108,28 +134,26 @@ final class StampRenderer {
         self.sampler = s
     }
 
-    /// Apply a single stamp at the given canvas position. Returns the set of tiles affected.
-    /// Caller is responsible for snapshotting the BEFORE state of any newly-affected tiles
-    /// before invoking this method.
     @discardableResult
     func applyStamp(
-        at canvasCenter: CGPoint,
+        _ stamp: StampDispatch,
         tipTexture: any MTLTexture,
-        radiusInCanvasPixels: CGFloat,
-        color: SIMD4<Float>,
-        alpha: Float,
         canvas: BitmapCanvas
     ) -> Set<TileCoord> {
-        let r = radiusInCanvasPixels
+        let r = stamp.radius
+        // Rotated-tip bounding box: round tips don't change, but reserve sqrt(2) for
+        // future asymmetric tips to stay safe under rotation.
+        let halfBox = r * 1.42
         let bbox = CGRect(
-            x: canvasCenter.x - r,
-            y: canvasCenter.y - r,
-            width: r * 2,
-            height: r * 2
+            x: stamp.canvasCenter.x - halfBox,
+            y: stamp.canvasCenter.y - halfBox,
+            width: halfBox * 2,
+            height: halfBox * 2
         )
         let coords = canvas.tilesIntersecting(bbox)
         guard !coords.isEmpty,
               let cb = commandQueue.makeCommandBuffer() else { return [] }
+        let pipeline = (stamp.blendMode == .erase) ? erasePipeline : normalPipeline
 
         var dirty: Set<TileCoord> = []
         for coord in coords {
@@ -140,16 +164,20 @@ final class StampRenderer {
             rpd.colorAttachments[0].storeAction = .store
             guard let encoder = cb.makeRenderCommandEncoder(descriptor: rpd) else { continue }
 
-            let cxLocal = Float(canvasCenter.x - CGFloat(coord.x * BitmapCanvas.tileSize))
-            let cyLocal = Float(canvasCenter.y - CGFloat(coord.y * BitmapCanvas.tileSize))
+            let cxLocal = Float(stamp.canvasCenter.x - CGFloat(coord.x * BitmapCanvas.tileSize))
+            let cyLocal = Float(stamp.canvasCenter.y - CGFloat(coord.y * BitmapCanvas.tileSize))
             var uniforms = StampUniforms(
                 stampCenterTilePixels: SIMD2<Float>(cxLocal, cyLocal),
                 stampRadiusPixels: Float(r),
-                stampAlpha: alpha,
-                stampColor: color,
-                tileSizePixels: SIMD2<Float>(Float(BitmapCanvas.tileSize), Float(BitmapCanvas.tileSize))
+                stampAlpha: stamp.alpha,
+                stampColor: stamp.color,
+                tileSizePixels: SIMD2<Float>(
+                    Float(BitmapCanvas.tileSize),
+                    Float(BitmapCanvas.tileSize)
+                ),
+                stampAngleRadians: stamp.angleRadians
             )
-            encoder.setRenderPipelineState(pipelineState)
+            encoder.setRenderPipelineState(pipeline)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<StampUniforms>.size, index: 0)
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<StampUniforms>.size, index: 0)
             encoder.setFragmentTexture(tipTexture, index: 0)
