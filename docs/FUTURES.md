@@ -270,6 +270,18 @@ Decision 13 specifies "R + drag, cursor-anchored." The Phase 8 implementation an
 
 ---
 
+### Mouse coalescing disable is global to the process
+
+Phase 11's stroke-quality fix disables `NSEvent` mouse coalescing via the legacy Obj-C class method (the Swift import doesn't expose it). On a Wacom this raises the input rate from the refresh-clamped ~60 Hz to the tablet's native ~300 Hz, which fixed the segmentation artifact. The toggle is process-global, so it also applies to ordinary mouse moves and trackpad gestures. Hasn't been a problem in test sessions, but if it ever is — re-enable on demand or only while a stroke tool is active (toggle in the tool's begin / end lifecycle).
+
+---
+
+### Per-sample command-buffer overhead at high stylus rates
+
+Each `StampRenderer.applyStamp` dispatch commits its own command buffer with one render pass per affected tile. At 300 Hz with a tight-spacing brush like G-Pen, that's hundreds of command buffers per second during fast painting. Apple Silicon handles it today, but it's not optimal — batching multiple stamps into a single command buffer per stylus sample (one buffer with N render passes inside) would be the obvious next optimization if any latency, thermal, or scheduling issues surface.
+
+---
+
 ## Larger v2+ features (speculative)
 
 These are mentioned for completeness; none are committed.

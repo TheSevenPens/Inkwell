@@ -152,6 +152,14 @@ func installMainMenu() {
     )
     redoItem.keyEquivalentModifierMask = [.command, .shift]
     editMenu.addItem(.separator())
+    // Backspace = U+0008. macOS displays it as ⌫ in menus.
+    let clearItem = editMenu.addItem(
+        withTitle: "Clear",
+        action: #selector(Document.clearAction(_:)),
+        keyEquivalent: "\u{8}"
+    )
+    clearItem.keyEquivalentModifierMask = []
+    editMenu.addItem(.separator())
     editMenu.addItem(
         withTitle: "Select All",
         action: #selector(CanvasView.selectAll(_:)),

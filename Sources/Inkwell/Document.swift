@@ -154,6 +154,65 @@ final class Document: NSDocument {
         }
     }
 
+    // MARK: - Edit → Clear
+
+    /// Backspace / Delete / Edit → Clear.
+    /// - With a selection active: erases the active layer's pixels (or the
+    ///   active mask, if mask-edit is on) within the selection — proportional
+    ///   to selection alpha.
+    /// - Without a selection: drops every tile from the active layer (or
+    ///   mask), which under sparse-tile semantics is equivalent to a full
+    ///   clear without leaving allocated zero-valued tiles behind.
+    @objc func clearAction(_ sender: Any?) {
+        guard let layer = canvas.activeBitmapLayer else { return }
+        let editingMask = canvas.editingMask && layer.mask != nil
+        if editingMask, let mask = layer.mask {
+            clearMaskContents(mask: mask, layerId: layer.id)
+        } else {
+            clearLayerContents(layer: layer)
+        }
+    }
+
+    private func clearLayerContents(layer: BitmapLayer) {
+        let coords = Set(layer.allTiles().map { $0.coord })
+        guard !coords.isEmpty else { return }
+        let before = layer.snapshotTiles(coords)
+
+        if let selection = canvas.selection {
+            for coord in coords {
+                layer.applyClearWithinSelection(at: coord, selection: selection)
+            }
+        } else {
+            layer.removeAllTiles()
+        }
+
+        let after = layer.snapshotTiles(coords)
+        registerLayerStrokeUndo(layerId: layer.id, before: before, after: after)
+        undoManager?.setActionName(canvas.selection != nil ? "Clear Selection" : "Clear Layer")
+        onCanvasChanged?()
+        updateChangeCount(.changeDone)
+    }
+
+    private func clearMaskContents(mask: LayerMask, layerId: UUID) {
+        let coords = Set(mask.allTiles().map { $0.coord })
+        guard !coords.isEmpty else { return }
+        let before = mask.snapshotTiles(coords)
+
+        if let selection = canvas.selection {
+            for coord in coords {
+                mask.applyClearWithinSelection(at: coord, selection: selection)
+            }
+        } else {
+            mask.removeAllTiles()
+        }
+
+        let after = mask.snapshotTiles(coords)
+        registerMaskStrokeUndo(layerId: layerId, before: before, after: after)
+        undoManager?.setActionName(canvas.selection != nil ? "Clear Selection" : "Clear Mask")
+        onCanvasChanged?()
+        updateChangeCount(.changeDone)
+    }
+
     // MARK: - Undo (per ARCHITECTURE.md decision 9)
 
     func registerLayerStrokeUndo(

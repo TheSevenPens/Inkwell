@@ -165,6 +165,57 @@ final class BitmapLayer: LayerNode {
         }
     }
 
+    // MARK: - Whole-layer ops (Edit → Clear, etc.)
+
+    /// Drop every tile from the layer. Sparse-tile semantics treat the result
+    /// as fully transparent — this is what "no selection + clear" produces.
+    func removeAllTiles() {
+        tiles.removeAll(keepingCapacity: true)
+    }
+
+    /// Attenuate every pixel of one tile by `(1 − selection)`. Used by
+    /// Edit → Clear when a selection is active.
+    func applyClearWithinSelection(at coord: TileCoord, selection: Selection) {
+        guard let texture = tiles[coord] else { return }
+        var bytes = [UInt8](readTileBytes(texture))
+        let selBytes = selection.bytes
+        let canvasW = canvasWidth
+        let canvasH = canvasHeight
+        let originX = coord.x * Canvas.tileSize
+        let originY = coord.y * Canvas.tileSize
+        let tileW = min(Canvas.tileSize, canvasW - originX)
+        let tileH = min(Canvas.tileSize, canvasH - originY)
+
+        for py in 0..<tileH {
+            // Tile data row 0 = highest canvas-Y row of the tile region.
+            let canvasY = originY + (Canvas.tileSize - 1 - py)
+            if canvasY < 0 || canvasY >= canvasH { continue }
+            // Selection bytes are stored top-down; row 0 = canvas Y = canvasH − 1.
+            let selRowOffset = (canvasH - 1 - canvasY) * canvasW
+            let tileRowOffset = py * Canvas.tileSize * 4
+            for px in 0..<tileW {
+                let canvasX = originX + px
+                if canvasX < 0 || canvasX >= canvasW { continue }
+                let selByte = Int(selBytes[selRowOffset + canvasX])
+                if selByte == 0 { continue }
+                let inverse = 255 - selByte
+                let off = tileRowOffset + px * 4
+                bytes[off + 0] = UInt8((Int(bytes[off + 0]) * inverse + 127) / 255)
+                bytes[off + 1] = UInt8((Int(bytes[off + 1]) * inverse + 127) / 255)
+                bytes[off + 2] = UInt8((Int(bytes[off + 2]) * inverse + 127) / 255)
+                bytes[off + 3] = UInt8((Int(bytes[off + 3]) * inverse + 127) / 255)
+            }
+        }
+        bytes.withUnsafeBufferPointer { buf in
+            texture.replace(
+                region: MTLRegionMake2D(0, 0, Canvas.tileSize, Canvas.tileSize),
+                mipmapLevel: 0,
+                withBytes: buf.baseAddress!,
+                bytesPerRow: Canvas.tileSize * 4
+            )
+        }
+    }
+
     // MARK: - Whole-layer rebuild (Phase 10 document transforms)
 
     /// Replace the layer's tile contents with a new flat image at the given dimensions.

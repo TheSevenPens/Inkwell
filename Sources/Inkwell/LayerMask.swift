@@ -138,6 +138,55 @@ final class LayerMask {
         }
     }
 
+    // MARK: - Whole-mask ops (Edit → Clear, etc.)
+
+    /// Drop every mask tile. Sparse-mask semantics treat the result as fully
+    /// white (visible) — this is what "no selection + clear mask" produces.
+    func removeAllTiles() {
+        tiles.removeAll(keepingCapacity: true)
+    }
+
+    /// Lerp every pixel of one mask tile toward white by `selection`. Where
+    /// selection = 1, the mask pixel becomes 255 (fully visible); where 0,
+    /// unchanged. Used by Edit → Clear when editing a mask with a selection
+    /// active.
+    func applyClearWithinSelection(at coord: TileCoord, selection: Selection) {
+        guard let texture = tiles[coord] else { return }
+        var bytes = [UInt8](readTileBytes(texture))
+        let selBytes = selection.bytes
+        let canvasW = canvasWidth
+        let canvasH = canvasHeight
+        let originX = coord.x * Canvas.tileSize
+        let originY = coord.y * Canvas.tileSize
+        let tileW = min(Canvas.tileSize, canvasW - originX)
+        let tileH = min(Canvas.tileSize, canvasH - originY)
+        let bytesPerRow = Canvas.tileSize
+
+        for py in 0..<tileH {
+            let canvasY = originY + (Canvas.tileSize - 1 - py)
+            if canvasY < 0 || canvasY >= canvasH { continue }
+            let selRowOffset = (canvasH - 1 - canvasY) * canvasW
+            let tileRowOffset = py * bytesPerRow
+            for px in 0..<tileW {
+                let canvasX = originX + px
+                if canvasX < 0 || canvasX >= canvasW { continue }
+                let selByte = Int(selBytes[selRowOffset + canvasX])
+                if selByte == 0 { continue }
+                let cur = Int(bytes[tileRowOffset + px])
+                let newVal = cur + ((255 - cur) * selByte + 127) / 255
+                bytes[tileRowOffset + px] = UInt8(min(255, newVal))
+            }
+        }
+        bytes.withUnsafeBufferPointer { buf in
+            texture.replace(
+                region: MTLRegionMake2D(0, 0, Canvas.tileSize, Canvas.tileSize),
+                mipmapLevel: 0,
+                withBytes: buf.baseAddress!,
+                bytesPerRow: bytesPerRow
+            )
+        }
+    }
+
     // MARK: - Whole-mask rebuild (Phase 10 document transforms)
 
     /// Replace the mask's tile contents with a new single-channel flat image at the

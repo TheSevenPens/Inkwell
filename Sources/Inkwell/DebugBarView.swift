@@ -19,13 +19,14 @@ final class DebugBarView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = NSColor(deviceWhite: 0.10, alpha: 1.0).cgColor
+        // Visually distinct yellow-orange background so the bar is unmistakable.
+        layer?.backgroundColor = NSColor(srgbRed: 1.0, green: 0.78, blue: 0.20, alpha: 1.0).cgColor
 
         for label in [sourceLabel, positionLabel, pressureLabel, tiltLabel, azimuthLabel, altitudeLabel, rateLabel] {
             label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-            label.textColor = NSColor(deviceWhite: 0.85, alpha: 1.0)
+            label.textColor = .black
         }
-        rateLabel.textColor = NSColor.systemYellow
+        rateLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .bold)
 
         let stack = NSStackView()
         stack.orientation = .horizontal
@@ -51,7 +52,7 @@ final class DebugBarView: NSView {
         let separator = NSView()
         separator.translatesAutoresizingMaskIntoConstraints = false
         separator.wantsLayer = true
-        separator.layer?.backgroundColor = NSColor(deviceWhite: 0.30, alpha: 1.0).cgColor
+        separator.layer?.backgroundColor = NSColor(srgbRed: 0.55, green: 0.40, blue: 0.05, alpha: 1.0).cgColor
         addSubview(separator)
 
         NSLayoutConstraint.activate([

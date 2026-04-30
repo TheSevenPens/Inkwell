@@ -886,6 +886,11 @@ final class CanvasView: MTKView {
 
     override func keyDown(with event: NSEvent) {
         let chars = event.charactersIgnoringModifiers ?? ""
+        // Backspace (keyCode 51) and Forward Delete (keyCode 117) → Edit → Clear.
+        if event.keyCode == 51 || event.keyCode == 117 {
+            document?.clearAction(self)
+            return
+        }
         if chars == " ", !event.isARepeat {
             spaceHeld = true
             cursorUpdate(with: event)

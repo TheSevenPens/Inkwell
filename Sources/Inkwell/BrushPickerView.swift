@@ -25,8 +25,8 @@ final class BrushPickerView: NSView {
         stack = NSStackView()
         stack.orientation = .vertical
         stack.spacing = 6
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 12, bottom: 16, right: 12)
-        stack.alignment = .leading
+        stack.edgeInsets = NSEdgeInsets(top: 16, left: 8, bottom: 16, right: 8)
+        stack.alignment = .centerX
         stack.distribution = .fill
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
@@ -36,77 +36,93 @@ final class BrushPickerView: NSView {
             stack.trailingAnchor.constraint(equalTo: trailingAnchor)
         ])
 
-        let brushTitle = NSTextField(labelWithString: "Brushes")
-        brushTitle.font = .boldSystemFont(ofSize: 12)
-        brushTitle.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(brushTitle)
+        stack.addArrangedSubview(sectionLabel("Brushes"))
 
         for (idx, brush) in BrushPalette.shared.brushes.enumerated() {
-            let button = NSButton()
-            button.title = brush.name
-            button.bezelStyle = .roundRect
-            button.setButtonType(.pushOnPushOff)
-            button.target = self
-            button.action = #selector(brushButtonClicked(_:))
+            let button = makeIconButton(
+                symbolName: Self.symbolName(for: brush),
+                tooltip: brush.name,
+                action: #selector(brushButtonClicked(_:))
+            )
             button.tag = idx
-            button.translatesAutoresizingMaskIntoConstraints = false
             stack.addArrangedSubview(button)
-            button.widthAnchor.constraint(equalToConstant: 100).isActive = true
             brushButtons.append(button)
         }
 
-        // Spacer
-        let spacer = NSView()
-        spacer.translatesAutoresizingMaskIntoConstraints = false
-        spacer.heightAnchor.constraint(equalToConstant: 6).isActive = true
-        stack.addArrangedSubview(spacer)
+        stack.addArrangedSubview(spacer(height: 8))
+        stack.addArrangedSubview(sectionLabel("Selection"))
 
-        let toolsTitle = NSTextField(labelWithString: "Selection")
-        toolsTitle.font = .boldSystemFont(ofSize: 12)
-        toolsTitle.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(toolsTitle)
-
-        let toolDefs: [(name: String, tool: ToolState.Tool)] = [
-            ("Rectangle", .selectRectangle),
-            ("Ellipse", .selectEllipse),
-            ("Lasso", .selectLasso)
+        let selectionDefs: [(symbol: String, tool: ToolState.Tool, name: String)] = [
+            ("rectangle.dashed", .selectRectangle, "Rectangle Selection"),
+            ("circle.dashed", .selectEllipse, "Ellipse Selection"),
+            ("lasso", .selectLasso, "Lasso Selection")
         ]
-        for def in toolDefs {
-            let button = NSButton()
-            button.title = def.name
-            button.bezelStyle = .roundRect
-            button.setButtonType(.pushOnPushOff)
-            button.target = self
-            button.action = #selector(toolButtonClicked(_:))
-            button.translatesAutoresizingMaskIntoConstraints = false
+        for def in selectionDefs {
+            let button = makeIconButton(
+                symbolName: def.symbol,
+                tooltip: def.name,
+                action: #selector(toolButtonClicked(_:))
+            )
             stack.addArrangedSubview(button)
-            button.widthAnchor.constraint(equalToConstant: 100).isActive = true
             toolButtons.append((button: button, tool: def.tool))
         }
 
-        // Navigate section (Hand tool)
-        let spacer2 = NSView()
-        spacer2.translatesAutoresizingMaskIntoConstraints = false
-        spacer2.heightAnchor.constraint(equalToConstant: 6).isActive = true
-        stack.addArrangedSubview(spacer2)
+        stack.addArrangedSubview(spacer(height: 8))
+        stack.addArrangedSubview(sectionLabel("Navigate"))
 
-        let navTitle = NSTextField(labelWithString: "Navigate")
-        navTitle.font = .boldSystemFont(ofSize: 12)
-        navTitle.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(navTitle)
-
-        let handButton = NSButton()
-        handButton.title = "Hand"
-        handButton.bezelStyle = .roundRect
-        handButton.setButtonType(.pushOnPushOff)
-        handButton.target = self
-        handButton.action = #selector(toolButtonClicked(_:))
-        handButton.translatesAutoresizingMaskIntoConstraints = false
+        let handButton = makeIconButton(
+            symbolName: "hand.raised.fill",
+            tooltip: "Hand (Pan)",
+            action: #selector(toolButtonClicked(_:))
+        )
         stack.addArrangedSubview(handButton)
-        handButton.widthAnchor.constraint(equalToConstant: 100).isActive = true
         toolButtons.append((button: handButton, tool: .hand))
 
         refreshSelection()
+    }
+
+    private func makeIconButton(symbolName: String, tooltip: String, action: Selector) -> NSButton {
+        let button = NSButton()
+        button.title = ""
+        button.bezelStyle = .regularSquare
+        button.setButtonType(.pushOnPushOff)
+        button.imagePosition = .imageOnly
+        button.toolTip = tooltip
+        button.target = self
+        button.action = action
+        let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+        if let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: tooltip)?
+            .withSymbolConfiguration(config) {
+            button.image = image
+        }
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        return button
+    }
+
+    private func sectionLabel(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = .boldSystemFont(ofSize: 10)
+        label.textColor = .secondaryLabelColor
+        return label
+    }
+
+    private func spacer(height: CGFloat) -> NSView {
+        let v = NSView()
+        v.translatesAutoresizingMaskIntoConstraints = false
+        v.heightAnchor.constraint(equalToConstant: height).isActive = true
+        return v
+    }
+
+    private static func symbolName(for brush: Brush) -> String {
+        switch brush.id {
+        case "g-pen": return "pencil.tip"
+        case "marker": return "paintbrush.fill"
+        case "airbrush": return "paintbrush.pointed.fill"
+        case "eraser": return "eraser.fill"
+        default: return "paintbrush"
+        }
     }
 
     private func refreshSelection() {

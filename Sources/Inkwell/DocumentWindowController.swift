@@ -85,7 +85,7 @@ final class DocumentWindowController: NSWindowController {
         container.addArrangedSubview(canvasArea)
         container.addArrangedSubview(rightHost)
         brushPicker.translatesAutoresizingMaskIntoConstraints = false
-        brushPicker.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        brushPicker.widthAnchor.constraint(equalToConstant: 72).isActive = true
         rightHost.widthAnchor.constraint(equalToConstant: 300).isActive = true
         canvasArea.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
