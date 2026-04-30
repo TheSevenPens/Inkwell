@@ -6,10 +6,24 @@ final class Document: NSDocument {
     let canvas: Canvas
     var onCanvasChanged: (() -> Void)?
 
-    override init() {
+    /// Default canvas dimensions for new documents created via the standard
+    /// `+ New` path that bypasses the dialog (e.g. `File → Open` failure
+    /// fallback, automation). The interactive `File → New` flow goes through
+    /// `InkwellDocumentController.newDocument(_:)` and uses dialog values.
+    static let defaultCanvasSize = CGSize(width: 2048, height: 1536)
+
+    override convenience init() {
+        self.init(canvasSize: Self.defaultCanvasSize)
+    }
+
+    init(canvasSize: CGSize) {
         let device = MTLCreateSystemDefaultDevice()!
         do {
-            self.canvas = try Canvas(width: 2048, height: 1536, device: device)
+            self.canvas = try Canvas(
+                width: max(1, Int(canvasSize.width)),
+                height: max(1, Int(canvasSize.height)),
+                device: device
+            )
         } catch {
             fatalError("Could not create canvas: \(error)")
         }

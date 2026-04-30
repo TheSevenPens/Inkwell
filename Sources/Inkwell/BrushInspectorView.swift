@@ -166,6 +166,12 @@ final class BrushInspectorView: NSView {
         )
         colorWell.color = nsColor
         hexField.stringValue = hexString(from: b.color)
+        // Airbrush is the only brush that wants a much larger Size range —
+        // it's commonly used for soft fills covering hundreds of pixels.
+        // Inking brushes (G-Pen, Marker, Eraser) cap at the smaller scale
+        // so the slider stays useful at typical line-art sizes.
+        let sizeMax: Double = (b.id == "airbrush") ? 1000 : 80
+        rows["size"]?.setRange(min: 1, max: sizeMax)
         rows["size"]?.value = Double(b.radius)
         rows["hardness"]?.value = Double(b.hardness)
         rows["spacing"]?.value = Double(b.spacing)
@@ -265,6 +271,18 @@ private final class SliderRow: NSStackView {
             slider.doubleValue = newValue
             valueView.stringValue = String(format: format, newValue)
         }
+    }
+
+    /// Update the slider's range. Used when the active brush changes and a
+    /// row should expose a different scale (e.g. Airbrush wants a much
+    /// larger Size cap than the inking brushes). Clamps the current value
+    /// to the new range so the slider position stays valid.
+    func setRange(min: Double, max: Double) {
+        slider.minValue = min
+        slider.maxValue = max
+        if slider.doubleValue < min { slider.doubleValue = min }
+        if slider.doubleValue > max { slider.doubleValue = max }
+        valueView.stringValue = String(format: format, slider.doubleValue)
     }
 
     init(label: String, min: Double, max: Double, fmt: String) {

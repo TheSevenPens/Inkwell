@@ -2,6 +2,14 @@ import AppKit
 import ObjectiveC
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+
+    /// `NSDocumentController` is a singleton; the first instance created
+    /// becomes `NSDocumentController.shared`. Build ours during
+    /// `AppDelegate.init` so AppKit picks `InkwellDocumentController` for
+    /// the rest of the launch sequence (including the auto-opened
+    /// Untitled document on first launch).
+    private let documentController = InkwellDocumentController()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
         disableMouseCoalescingViaRuntime()
