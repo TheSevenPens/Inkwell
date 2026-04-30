@@ -37,6 +37,7 @@ struct DocumentMetadata: Codable {
 enum LayerNodeData: Codable {
     case bitmap(BitmapLayerData)
     case group(GroupLayerData)
+    case vector(VectorLayerData)
 
     private enum CodingKeys: String, CodingKey {
         case type, data
@@ -50,9 +51,9 @@ enum LayerNodeData: Codable {
             self = .bitmap(try container.decode(BitmapLayerData.self, forKey: .data))
         case "group":
             self = .group(try container.decode(GroupLayerData.self, forKey: .data))
+        case "vector":
+            self = .vector(try container.decode(VectorLayerData.self, forKey: .data))
         default:
-            // Forward-compatible: unknown layer types fail loudly here, but the manifest's
-            // formatVersion check at load is the primary gate for unsupported futures.
             throw DecodingError.dataCorruptedError(
                 forKey: .type, in: container,
                 debugDescription: "Unknown layer type: \(type)"
@@ -68,6 +69,9 @@ enum LayerNodeData: Codable {
             try container.encode(data, forKey: .data)
         case .group(let data):
             try container.encode("group", forKey: .type)
+            try container.encode(data, forKey: .data)
+        case .vector(let data):
+            try container.encode("vector", forKey: .type)
             try container.encode(data, forKey: .data)
         }
     }
@@ -95,6 +99,18 @@ struct GroupLayerData: Codable {
     var children: [LayerNodeData]
 }
 
+/// Vector layer manifest record. Strokes are stored as JSON inline; the tile
+/// cache is *not* persisted (it's re-rasterized at load), so saved vector
+/// layers don't contribute records to `tiles.bin`.
+struct VectorLayerData: Codable {
+    var id: String
+    var name: String
+    var visible: Bool
+    var opacity: Double
+    var blendMode: String
+    var strokes: [VectorStroke]
+}
+
 extension Array where Element == LayerNodeData {
     /// Walk the tree and yield every bitmap node as a `LayerNodeData.bitmap` case.
     func recursiveBitmapData() -> [LayerNodeData] {
@@ -103,6 +119,8 @@ extension Array where Element == LayerNodeData {
             switch node {
             case .bitmap:
                 out.append(node)
+            case .vector:
+                continue
             case .group(let g):
                 out.append(contentsOf: g.children.recursiveBitmapData())
             }
@@ -426,6 +444,15 @@ extension Canvas {
             }
         }
 
+        // Rebuild vector layer tile caches now that the tree is in place.
+        if let ribbonRenderer = ribbonRenderer {
+            for layer in idMap.values {
+                if let vector = layer as? VectorLayer {
+                    vector.rebuildAllTilesFromStrokes(ribbonRenderer: ribbonRenderer)
+                }
+            }
+        }
+
         let activeId = manifest.activeLayerId.flatMap { UUID(uuidString: $0) }
         replaceLayers(newRoots, activeLayerId: activeId)
 
@@ -478,6 +505,16 @@ extension Canvas {
                 hasMask: bitmap.mask != nil ? true : nil
             ))
         }
+        if let vector = node as? VectorLayer {
+            return .vector(VectorLayerData(
+                id: vector.id.uuidString,
+                name: vector.name,
+                visible: vector.isVisible,
+                opacity: Double(vector.opacity),
+                blendMode: vector.blendMode.rawValue,
+                strokes: vector.strokes
+            ))
+        }
         if let group = node as? GroupLayer {
             return .group(GroupLayerData(
                 id: group.id.uuidString,
@@ -489,7 +526,6 @@ extension Canvas {
                 children: group.children.map { layerNodeData(for: $0) }
             ))
         }
-        // Future layer kinds would map here. Fallback: encode as an empty bitmap.
         return .bitmap(BitmapLayerData(
             id: node.id.uuidString,
             name: node.name,
@@ -565,6 +601,28 @@ extension Canvas {
             layer.isVisible = b.visible
             layer.opacity = CGFloat(b.opacity)
             layer.blendMode = LayerBlendMode(rawValue: b.blendMode) ?? .normal
+            idMap[id] = layer
+            return layer
+        case .vector(let v):
+            guard let id = UUID(uuidString: v.id) else {
+                throw FileFormatError.invalidFile("Bad UUID: \(v.id)")
+            }
+            let layer = VectorLayer(
+                id: id,
+                name: v.name,
+                device: device,
+                canvasWidth: width,
+                canvasHeight: height
+            )
+            layer.isVisible = v.visible
+            layer.opacity = CGFloat(v.opacity)
+            layer.blendMode = LayerBlendMode(rawValue: v.blendMode) ?? .normal
+            // Stroke list is set here without rebuilding the tile cache; the
+            // caller is responsible for re-rasterizing once a ribbon renderer
+            // is available (Document.deserializeFromBundle does this).
+            for stroke in v.strokes {
+                layer.appendStrokeWithoutRender(stroke)
+            }
             idMap[id] = layer
             return layer
         case .group(let g):

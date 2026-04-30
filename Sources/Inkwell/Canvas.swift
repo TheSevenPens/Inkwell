@@ -23,6 +23,17 @@ final class Canvas {
     let device: any MTLDevice
     let commandQueue: any MTLCommandQueue
 
+    /// Lazily-built renderer used to rasterize vector strokes into a layer's
+    /// tile cache. Shared across all vector layers in this canvas.
+    private(set) lazy var ribbonRenderer: StrokeRibbonRenderer? = {
+        do {
+            return try StrokeRibbonRenderer(device: device, commandQueue: commandQueue)
+        } catch {
+            NSLog("StrokeRibbonRenderer init failed: \(error)")
+            return nil
+        }
+    }()
+
     private(set) var rootLayers: [LayerNode] = []
     private(set) var activeLayerId: UUID?
 
@@ -76,6 +87,7 @@ final class Canvas {
     }
 
     var activeBitmapLayer: BitmapLayer? { activeLayer as? BitmapLayer }
+    var activeVectorLayer: VectorLayer? { activeLayer as? VectorLayer }
 
     func setActiveLayer(_ id: UUID) {
         guard findLayer(id) != nil else { return }
@@ -242,6 +254,20 @@ final class Canvas {
     }
 
     @discardableResult
+    func addNewVectorLayer() -> UUID {
+        let layer = VectorLayer(
+            name: makeUniqueLayerName(prefix: "Vector"),
+            device: device,
+            canvasWidth: width,
+            canvasHeight: height
+        )
+        insertAdjacentToActive(layer)
+        activeLayerId = layer.id
+        notifyChanged()
+        return layer.id
+    }
+
+    @discardableResult
     func addNewGroup() -> UUID {
         let group = GroupLayer(name: makeUniqueLayerName(prefix: "Group"))
         insertAdjacentToActive(group)
@@ -379,15 +405,15 @@ final class Canvas {
     // MARK: - Helpers
 
     private func firstSelectableLayer() -> LayerNode? {
-        // Prefer a leaf bitmap layer; fall back to any layer.
-        if let leaf = firstBitmap(in: rootLayers) { return leaf }
+        // Prefer a leaf compositable (bitmap or vector); fall back to any layer.
+        if let leaf = firstCompositable(in: rootLayers) { return leaf }
         return rootLayers.first
     }
 
-    private func firstBitmap(in nodes: [LayerNode]) -> LayerNode? {
+    private func firstCompositable(in nodes: [LayerNode]) -> LayerNode? {
         for n in nodes {
-            if n is BitmapLayer { return n }
-            if let g = n as? GroupLayer, let found = firstBitmap(in: g.children) {
+            if n is CompositableLayer { return n }
+            if let g = n as? GroupLayer, let found = firstCompositable(in: g.children) {
                 return found
             }
         }
@@ -412,9 +438,10 @@ final class Canvas {
         return names
     }
 
-    /// Walk leaf bitmap layers in compositing order (back-to-front), with their
-    /// effective opacity multiplied by enclosing groups (pass-through model).
-    func walkVisibleBitmapLayers(_ visit: (BitmapLayer, CGFloat, LayerBlendMode) -> Void) {
+    /// Walk leaf compositable layers (bitmap and vector) in compositing order
+    /// (back-to-front), with their effective opacity multiplied by enclosing
+    /// groups (pass-through model).
+    func walkVisibleCompositables(_ visit: (any CompositableLayer, CGFloat, LayerBlendMode) -> Void) {
         // rootLayers[0] is the topmost in the panel (drawn last). Iterate reversed
         // so the bottom of the stack is composited first.
         walk(reversed: Array(rootLayers.reversed()), parentMultiplier: 1.0, visit: visit)
@@ -423,16 +450,15 @@ final class Canvas {
     private func walk(
         reversed nodes: [LayerNode],
         parentMultiplier: CGFloat,
-        visit: (BitmapLayer, CGFloat, LayerBlendMode) -> Void
+        visit: (any CompositableLayer, CGFloat, LayerBlendMode) -> Void
     ) {
         for node in nodes {
             guard node.isVisible else { continue }
             let effective = node.opacity * parentMultiplier
             if effective < 0.001 { continue }
-            if let bitmap = node as? BitmapLayer {
-                visit(bitmap, effective, bitmap.blendMode)
+            if let compositable = node as? (any CompositableLayer) {
+                visit(compositable, effective, compositable.blendMode)
             } else if let group = node as? GroupLayer {
-                // Phase 4 pass-through groups: blend mode is not isolated; opacity multiplies.
                 walk(
                     reversed: Array(group.children.reversed()),
                     parentMultiplier: effective,
@@ -465,12 +491,12 @@ final class Canvas {
         )
         flat.fill(CGRect(x: 0, y: 0, width: width, height: height))
 
-        walkVisibleBitmapLayers { bitmap, effectiveOpacity, blendMode in
+        walkVisibleCompositables { layer, effectiveOpacity, blendMode in
             flat.saveGState()
             flat.setBlendMode(blendMode.cgBlendMode)
             flat.setAlpha(effectiveOpacity)
-            for entry in bitmap.allTiles() {
-                let bytes = bitmap.readTileBytes(entry.texture)
+            for entry in layer.allTiles() {
+                let bytes = layer.readTileBytes(entry.texture)
                 guard let provider = CGDataProvider(data: bytes as CFData) else { continue }
                 guard let img = CGImage(
                     width: Canvas.tileSize,
@@ -485,7 +511,7 @@ final class Canvas {
                     shouldInterpolate: false,
                     intent: .defaultIntent
                 ) else { continue }
-                flat.draw(img, in: bitmap.canvasRect(for: entry.coord))
+                flat.draw(img, in: layer.canvasRect(for: entry.coord))
             }
             flat.restoreGState()
         }

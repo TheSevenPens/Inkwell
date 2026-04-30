@@ -164,6 +164,10 @@ final class Document: NSDocument {
     ///   mask), which under sparse-tile semantics is equivalent to a full
     ///   clear without leaving allocated zero-valued tiles behind.
     @objc func clearAction(_ sender: Any?) {
+        if let vector = canvas.activeVectorLayer {
+            clearVectorContents(layer: vector)
+            return
+        }
         guard let layer = canvas.activeBitmapLayer else { return }
         let editingMask = canvas.editingMask && layer.mask != nil
         if editingMask, let mask = layer.mask {
@@ -171,6 +175,17 @@ final class Document: NSDocument {
         } else {
             clearLayerContents(layer: layer)
         }
+    }
+
+    private func clearVectorContents(layer: VectorLayer) {
+        let before = layer.strokes
+        if before.isEmpty { return }
+        layer.removeAllStrokes()
+        let after: [VectorStroke] = []
+        registerVectorStrokeUndo(layerId: layer.id, before: before, after: after)
+        undoManager?.setActionName("Clear Layer")
+        onCanvasChanged?()
+        updateChangeCount(.changeDone)
     }
 
     private func clearLayerContents(layer: BitmapLayer) {
@@ -239,6 +254,34 @@ final class Document: NSDocument {
         undoManager?.setActionName("Brush Stroke")
         undoManager?.registerUndo(withTarget: self) { [weak self] _ in
             self?.applyLayerSnapshotAndRegisterInverse(layerId: layerId, snapshot: previous)
+        }
+    }
+
+    func registerVectorStrokeUndo(
+        layerId: UUID,
+        before: [VectorStroke],
+        after: [VectorStroke]
+    ) {
+        guard let undoManager else { return }
+        if before == after { return }
+        undoManager.setActionName("Brush Stroke")
+        undoManager.registerUndo(withTarget: self) { [weak self] _ in
+            self?.applyVectorStrokesAndRegisterInverse(layerId: layerId, strokes: before)
+        }
+    }
+
+    private func applyVectorStrokesAndRegisterInverse(
+        layerId: UUID,
+        strokes: [VectorStroke]
+    ) {
+        guard let layer = canvas.findLayer(layerId) as? VectorLayer,
+              let ribbonRenderer = canvas.ribbonRenderer else { return }
+        let previous = layer.strokes
+        layer.setStrokes(strokes, ribbonRenderer: ribbonRenderer)
+        onCanvasChanged?()
+        undoManager?.setActionName("Brush Stroke")
+        undoManager?.registerUndo(withTarget: self) { [weak self] _ in
+            self?.applyVectorStrokesAndRegisterInverse(layerId: layerId, strokes: previous)
         }
     }
 

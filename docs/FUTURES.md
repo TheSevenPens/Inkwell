@@ -74,19 +74,28 @@ Pass 1 ships rotate / flip; Pass 2 fills in:
 
 These are sizable additions designed in from the start: the architecture preserves the option to add them later without rework.
 
-### Vector layers
+### Vector layers — v1 shipped (G-Pen only)
 
-A new layer type alongside bitmap layers. Strokes on a vector layer are stored as fitted paths (Bézier or input samples) and re-rasterized on demand at the current view scale. The big wins are lossless transforms and lossless document scaling.
+A `VectorLayer` type now exists alongside `BitmapLayer`. Strokes are stored as raw stylus samples (sample position + per-sample pressure) plus a brush snapshot, and rendered as a continuous swept-path SDF capsule-chain ribbon (no per-stamp seams). The layer caches its rasterization into the same sparse tile structure bitmap layers use, so the compositor doesn't have to know which kind of layer it's drawing.
 
-**Why deferred from v1.** Significant engineering surface — a second layer type with its own rendering, editing, hit-testing, and PSD interop story. v1 is bitmap-first because that is what the brush engine and tile cache already serve.
+**What v1 ships:**
+- New `+ Vector` button in the layer panel toolbar.
+- G-Pen on a vector layer produces a vector stroke (radius modulated by pressure along a single continuous ribbon; opacity constant per stroke).
+- Live in-flight rendering uses the same Catmull-Rom densification as the committed-stroke renderer, so undo→redo is pixel-identical to the original draw.
+- Persisted in the `.inkwell` bundle as JSON-encoded strokes inside the manifest. Tile cache is **not** persisted — strokes are authoritative and re-rasterize on load.
+- Stroke-list undo: snapshots the strokes array (cheap), rebuilds tiles from the remaining strokes on undo / redo. Edit → Clear works on vector layers.
 
-**Architectural readiness.** The four commitments in `ARCHITECTURE.md` decision 5 are designed to keep this door open: `Layer` is a sum type from day one; the stroke pipeline is layer-aware; the save format carries a per-layer type tag and version; the compositor accepts heterogeneous layers. Adding `VectorLayer` as a new conformer should be a pure addition, not a rewrite.
+**v2 follow-ups (this is the "open questions" list for when we extend it):**
+- **Soft-edged vector brushes (Marker, Airbrush).** Today only G-Pen is wired; other brushes silently no-op on vector layers because their soft falloff requires a different rendering pipeline (likely a two-pass scratch-buffer with max-blend coverage to avoid intra-stroke overdarkening).
+- **Vector eraser.** Hit-test strokes against the eraser path and either remove whole strokes or split them at intersection points.
+- **Per-stroke selection / move / scale / restyle.** The "vector" benefit users will actually want.
+- **True zoom-aware re-rasterization.** Today the cached tiles are at 1:1 canvas resolution; at high zoom we use nearest-neighbour magnification (crisp but blocky) rather than re-rasterizing the strokes at the current view scale. Re-rasterizing would give the genuine "infinite vector zoom" feel.
+- **Joint AA halo overdarkening.** Adjacent capsule segments share AA halo regions where over-blend stacks slightly, producing ~1px-wide darker pixels at curve joints. Imperceptible at G-Pen's default opacity=1.0; will become visible if we expose opacity < 1 on vectors. Fix is a polyline-buffer per-tile fragment shader (compute min distance across all segments in one pass).
+- **Vector-layer masks.** Today `VectorLayer.mask` is hard-coded to nil; the protocol can carry one but the UI / file format / undo paths haven't been wired.
+- **Stroke-fitting.** Today we store raw stylus samples (sparse) and Catmull-Rom-densify on render. Replacing raw samples with fitted Bézier paths would shrink files significantly for long sessions but loses some pressure fidelity.
+- **PSD export.** Vector layers currently flatten on PSD export (correct, if lossy).
 
-**Open questions for when we pick this up.**
-- Stroke representation: keep raw input samples (richer, larger), fitted Bézier paths (compact, smoother), or both?
-- Editing model: do strokes remain editable after commit, or are they immutable like bitmap-layer strokes?
-- PSD export: rasterize on export (simple, lossy) or attempt SVG-style preservation in a custom layer (complex, fragile)?
-- Memory: how do we bound stroke retention on long sessions of vector painting?
+**Memory note.** Long sessions of vector painting accumulate strokes indefinitely; nothing is currently pruned or fitted. A typical stroke is ~50–500 raw samples. At ~64 bytes/sample that's ~30 KB per stroke; 1000 strokes ≈ 30 MB. Acceptable for now; if it becomes a problem, fitting + sample reduction is the answer.
 
 ---
 

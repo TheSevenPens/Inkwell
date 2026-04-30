@@ -5,7 +5,7 @@ import Metal
 /// A bitmap layer: a sparse grid of GPU-resident tile textures, plus standard
 /// per-layer attributes (visibility, opacity, blend mode). Phase 4 — only kind
 /// of leaf layer that exists; vector / text / adjustment kinds arrive later.
-final class BitmapLayer: LayerNode {
+final class BitmapLayer: LayerNode, CompositableLayer {
     let id: UUID
     var name: String
     var isVisible: Bool = true

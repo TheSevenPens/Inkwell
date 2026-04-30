@@ -57,8 +57,8 @@ A discriminated union by the `type` field:
 
 ```json
 {
-  "type": "bitmap" | "group",
-  "data": <bitmap-data | group-data>
+  "type": "bitmap" | "vector" | "group",
+  "data": <bitmap-data | vector-data | group-data>
 }
 ```
 
@@ -81,6 +81,42 @@ A discriminated union by the `type` field:
 - **`opacity`** (float, required). 0.0 – 1.0.
 - **`blendMode`** (string, required). One of: `"normal"`, `"multiply"`, `"screen"`, `"overlay"`. The full Photoshop set arrives in Phase 9 with the PSD fidelity table.
 - **`hasMask`** (bool, optional, added in Phase 6). When `true`, the layer has an attached mask; mask tiles for this layer (if any are painted) appear in `tiles.bin` with the mask flag bit set. Absent / `false` / missing field = no mask. Backward-compatible with Phase 5 files.
+
+### Vector layer data
+
+```json
+{
+  "id": "<uuid>",
+  "name": "Vector Layer",
+  "visible": true,
+  "opacity": 1.0,
+  "blendMode": "normal",
+  "strokes": [
+    {
+      "kind": "gPen",
+      "color": { "r": 0.04, "g": 0.04, "b": 0.07, "a": 1.0 },
+      "opacity": 1.0,
+      "minRadius": 0.9,
+      "maxRadius": 6.0,
+      "samples": [
+        { "x": 120.5, "y": 84.3, "pressure": 0.42 },
+        { "x": 122.1, "y": 84.7, "pressure": 0.55 }
+      ],
+      "bounds": { "origin": { "x": 112.5, "y": 76.3 }, "size": { "width": 18, "height": 18 } }
+    }
+  ]
+}
+```
+
+- **`strokes`** (array). The authoritative list of vector strokes. Tile cache for vector layers is **not** persisted — the layer's tile textures are re-rasterized from `strokes` at load time using the same Catmull-Rom densification + SDF capsule-chain renderer that draws them in-flight, so the on-disk record is purely the geometry.
+- Each stroke carries:
+  - **`kind`** — V1 only `"gPen"`. Soft-edged vector brushes (Marker / Airbrush) are deferred (see `FUTURES.md`).
+  - **`color`** — sRGB straight RGBA, components 0–1.
+  - **`opacity`** — constant per-stroke alpha. V1 G-Pen ignores per-sample opacity modulation.
+  - **`minRadius`** / **`maxRadius`** — radius (canvas pixels) at zero / full pressure. Linear interpolation between them per sample.
+  - **`samples`** — raw stylus samples (sparse). The renderer densifies these via Catmull-Rom at render time; storing the dense polyline would balloon the file.
+  - **`bounds`** — cached canvas-space bbox of the stroke's footprint, padded by `maxRadius` + 2px AA. Re-derivable from samples if absent (forward-compat).
+- Vector layers contribute **no** records to `tiles.bin` (their tile cache is derived).
 
 ### Group layer data
 

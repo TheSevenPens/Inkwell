@@ -173,6 +173,11 @@ final class CanvasRenderer {
     private let tilePipeline: any MTLRenderPipelineState
     private let antsPipeline: any MTLRenderPipelineState
     private let sampler: any MTLSamplerState
+    /// Tile compositor sampler. Linear minification (smooth zoom-out, no
+    /// shimmer) but **nearest magnification** (crisp pixels at zoom > 100% —
+    /// matches user expectation for paint apps; bilinear here would blur the
+    /// edges of vector and bitmap strokes alike when zoomed in).
+    private let tileSampler: any MTLSamplerState
     private weak var canvas: Canvas?
 
     private let startTime = Date()
@@ -231,6 +236,16 @@ final class CanvasRenderer {
             throw RendererError.samplerFailed
         }
         self.sampler = s
+
+        let tsd = MTLSamplerDescriptor()
+        tsd.minFilter = .linear
+        tsd.magFilter = .nearest
+        tsd.sAddressMode = .clampToEdge
+        tsd.tAddressMode = .clampToEdge
+        guard let ts = device.makeSamplerState(descriptor: tsd) else {
+            throw RendererError.samplerFailed
+        }
+        self.tileSampler = ts
     }
 
     func attach(canvas: Canvas) {
@@ -265,12 +280,12 @@ final class CanvasRenderer {
 
         // Layer tree compositing
         encoder.setRenderPipelineState(tilePipeline)
-        encoder.setFragmentSamplerState(sampler, index: 0)
+        encoder.setFragmentSamplerState(tileSampler, index: 0)
         let defaultMask = canvas.defaultMaskTexture
-        canvas.walkVisibleBitmapLayers { bitmap, effectiveOpacity, blendMode in
-            let visibleCoords = bitmap.tilesIntersecting(visibleCanvasRect)
+        canvas.walkVisibleCompositables { layer, effectiveOpacity, blendMode in
+            let visibleCoords = layer.tilesIntersecting(visibleCanvasRect)
             for coord in visibleCoords {
-                guard let texture = bitmap.tile(at: coord) else { continue }
+                guard let texture = layer.tile(at: coord) else { continue }
                 var tu = TileUniforms(
                     transform: viewTransform,
                     tileOrigin: SIMD2<Float>(
@@ -281,7 +296,7 @@ final class CanvasRenderer {
                     layerOpacity: Float(effectiveOpacity),
                     blendMode: blendMode.shaderIndex
                 )
-                let maskTex: any MTLTexture = bitmap.mask?.tile(at: coord) ?? defaultMask
+                let maskTex: any MTLTexture = layer.mask?.tile(at: coord) ?? defaultMask
                 encoder.setVertexBytes(&tu, length: MemoryLayout<TileUniforms>.size, index: 0)
                 encoder.setFragmentBytes(&tu, length: MemoryLayout<TileUniforms>.size, index: 0)
                 encoder.setFragmentTexture(texture, index: 0)

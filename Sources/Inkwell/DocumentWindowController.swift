@@ -89,8 +89,19 @@ final class DocumentWindowController: NSWindowController {
         rightHost.widthAnchor.constraint(equalToConstant: 300).isActive = true
         canvasArea.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
+        // Clamp default content size to the visible screen so the window
+        // doesn't extend below the dock on smaller displays. Title-bar height
+        // is part of the window frame (not the content rect), so leave a
+        // ~40 pt budget for it inside the visible frame too.
+        let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1500, height: 990)
+        let preferredW: CGFloat = 1500
+        let preferredH: CGFloat = 950
+        let titleBarBudget: CGFloat = 40
+        let margin: CGFloat = 12
+        let contentW = min(preferredW, visible.width - margin * 2)
+        let contentH = min(preferredH, visible.height - margin * 2 - titleBarBudget)
         let window = NSWindow(
-            contentRect: NSRect(x: 100, y: 100, width: 1500, height: 950),
+            contentRect: NSRect(x: 100, y: 100, width: contentW, height: contentH),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -112,7 +123,20 @@ final class DocumentWindowController: NSWindowController {
         ])
         window.contentView = host
         window.title = "Untitled"
-        window.center()
+        // Allow the window to shrink small enough to always fit on smaller
+        // displays. The internal stack will compress; the user can resize up.
+        window.contentMinSize = NSSize(width: 600, height: 400)
+        // Center inside the *visible frame* (not the full screen frame), so
+        // the dock and menu bar don't obscure the bottom / top of the window.
+        if let screen = NSScreen.main {
+            let v = screen.visibleFrame
+            var f = window.frame
+            f.origin.x = v.minX + (v.width - f.width) / 2.0
+            f.origin.y = v.minY + (v.height - f.height) / 2.0
+            window.setFrame(f, display: false)
+        } else {
+            window.center()
+        }
         super.init(window: window)
         self.brushPicker = brushPicker
         self.rightHost = rightHost

@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import Metal
 
 /// Per ARCHITECTURE.md decision 5 commitment 1: a sum type for layers.
 /// Bitmap layers and groups are siblings; future vector / text / adjustment
@@ -10,6 +11,21 @@ protocol LayerNode: AnyObject {
     var isVisible: Bool { get set }
     var opacity: CGFloat { get set }
     var blendMode: LayerBlendMode { get set }
+}
+
+/// Layers that present a sparse grid of GPU tiles to the compositor.
+/// BitmapLayer is the canonical conformer; VectorLayer caches its rasterized
+/// strokes into the same tile structure so the compositor doesn't need to know
+/// which kind it's drawing.
+protocol CompositableLayer: LayerNode {
+    var canvasWidth: Int { get }
+    var canvasHeight: Int { get }
+    var mask: LayerMask? { get }
+    func tile(at coord: TileCoord) -> (any MTLTexture)?
+    func tilesIntersecting(_ rect: CGRect) -> [TileCoord]
+    func canvasRect(for coord: TileCoord) -> CGRect
+    func allTiles() -> [(coord: TileCoord, texture: any MTLTexture)]
+    func readTileBytes(_ texture: any MTLTexture) -> Data
 }
 
 /// Phase 4 blend mode set. Phase 9 expands to the full Photoshop set with the

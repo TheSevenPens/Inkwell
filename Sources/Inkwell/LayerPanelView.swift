@@ -139,10 +139,11 @@ final class LayerPanelView: NSView {
         layerToolbar.orientation = .horizontal
         layerToolbar.spacing = 4
         let newLayerBtn = NSButton(title: "+ Layer", target: self, action: #selector(newLayer(_:)))
+        let newVectorBtn = NSButton(title: "+ Vector", target: self, action: #selector(newVectorLayer(_:)))
         let newGroupBtn = NSButton(title: "+ Group", target: self, action: #selector(newGroup(_:)))
         let dupBtn = NSButton(title: "Dup", target: self, action: #selector(duplicateLayer(_:)))
         let delBtn = NSButton(title: "Del", target: self, action: #selector(deleteLayer(_:)))
-        for b in [newLayerBtn, newGroupBtn, dupBtn, delBtn] {
+        for b in [newLayerBtn, newVectorBtn, newGroupBtn, dupBtn, delBtn] {
             b.bezelStyle = .roundRect
             b.controlSize = .small
             layerToolbar.addArrangedSubview(b)
@@ -235,6 +236,7 @@ final class LayerPanelView: NSView {
     }
 
     @objc private func newLayer(_ sender: Any?) { canvas?.addNewBitmapLayer() }
+    @objc private func newVectorLayer(_ sender: Any?) { canvas?.addNewVectorLayer() }
     @objc private func newGroup(_ sender: Any?) { canvas?.addNewGroup() }
 
     @objc private func duplicateLayer(_ sender: Any?) {

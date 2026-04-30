@@ -265,7 +265,7 @@ Pass-2 deferrals are tracked in [`FUTURES.md`](FUTURES.md). Architectural decisi
 
 Tracked in [`FUTURES.md`](FUTURES.md):
 
-- Vector layers.
+- Vector layers — V1 (G-Pen only) **shipped post-Phase-11**; V2 follow-ups (soft-edged vector brushes, vector eraser, per-stroke editing, zoom-aware re-rasterization) tracked in `FUTURES.md`.
 - ABR brush import.
 - Distortion brushes (blur, liquify, smudge).
 - Timelapse playback UI (the underlying delta stream is captured from Phase 5 onward, pending `history.bin` write).

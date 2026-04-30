@@ -30,6 +30,13 @@ final class CanvasView: MTKView {
     private var strokeBeforeMask = LayerMask.TileSnapshot.empty
     private var strokeAffectedCoords: Set<TileCoord> = []
 
+    // Vector-painting state. Active when the user is mid-stroke on a VectorLayer.
+    private var vectorBuilder: VectorStrokeBuilder?
+    private var vectorTargetId: UUID?
+    private var vectorRawSamples: [VectorStrokeSample] = []
+    private var vectorBeforeStrokes: [VectorStroke] = []
+    private var vectorActiveStroke: VectorStroke?
+
     private var selectionGesture: SelectionGesture?
     private var preGestureSelectionBytes: [UInt8]?
 
@@ -323,10 +330,13 @@ final class CanvasView: MTKView {
     /// and the painting path can use them to fill in between mouseDragged events.
     override func tabletPoint(with event: NSEvent) {
         recordEventForDebug(event)
-        // If a stroke is in flight, feed this sample to the emitter so we don't
-        // lose intermediate tablet reports between mouseDragged events.
-        if let emitter = emitter {
-            let sample = sampleFor(event: event)
+        // If a stroke is in flight, feed this sample so we don't lose
+        // intermediate tablet reports between mouseDragged events.
+        let sample = sampleFor(event: event)
+        if vectorBuilder != nil {
+            lastSample = sample
+            continueVectorStroke(at: sample)
+        } else if let emitter = emitter {
             lastSample = sample
             stampRenderer?.beginBatch()
             emitter.continueTo(sample)
@@ -416,9 +426,14 @@ final class CanvasView: MTKView {
                 return
             }
             let optionEraser = event.modifierFlags.contains(.option)
-            stampRenderer?.beginBatch()
-            beginStroke(at: sampleFor(event: event), forceErase: optionEraser)
-            stampRenderer?.commitBatch()
+            let sample = sampleFor(event: event)
+            if canvas.activeVectorLayer != nil {
+                beginVectorStroke(at: sample)
+            } else {
+                stampRenderer?.beginBatch()
+                beginStroke(at: sample, forceErase: optionEraser)
+                stampRenderer?.commitBatch()
+            }
         case .hand:
             beginPan(with: event)
         case .selectRectangle:
@@ -443,9 +458,13 @@ final class CanvasView: MTKView {
         case .brush:
             let sample = sampleFor(event: event)
             lastSample = sample
-            stampRenderer?.beginBatch()
-            emitter?.continueTo(sample)
-            stampRenderer?.commitBatch()
+            if vectorBuilder != nil {
+                continueVectorStroke(at: sample)
+            } else {
+                stampRenderer?.beginBatch()
+                emitter?.continueTo(sample)
+                stampRenderer?.commitBatch()
+            }
         case .hand:
             continuePan(with: event)
         case .selectRectangle, .selectEllipse, .selectLasso:
@@ -460,12 +479,16 @@ final class CanvasView: MTKView {
         switch ToolState.shared.tool {
         case .brush:
             let sample = sampleFor(event: event)
-            stampRenderer?.beginBatch()
-            emitter?.end(sample)
-            stampRenderer?.commitBatch()
-            emitter = nil
-            stopAirbrushTimer()
-            commitUndoIfNeeded()
+            if vectorBuilder != nil {
+                endVectorStroke(at: sample)
+            } else {
+                stampRenderer?.beginBatch()
+                emitter?.end(sample)
+                stampRenderer?.commitBatch()
+                emitter = nil
+                stopAirbrushTimer()
+                commitUndoIfNeeded()
+            }
         case .hand:
             endPan(with: event)
         case .selectRectangle, .selectEllipse, .selectLasso:
@@ -615,6 +638,113 @@ final class CanvasView: MTKView {
             document.registerMaskStrokeUndo(layerId: layerId, before: strokeBeforeMask, after: after)
             document.updateChangeCount(.changeDone)
         }
+    }
+
+    // MARK: - Vector stroke path
+
+    /// V1: vector layers only accept G-Pen. Other brushes leave the layer
+    /// untouched (no painting) until soft-edged vector brushes ship.
+    private func brushIsVectorCapable(_ brush: Brush) -> Bool {
+        brush.id == "g-pen"
+    }
+
+    private func beginVectorStroke(at sample: StylusSample) {
+        guard let layer = canvas.activeVectorLayer else { return }
+        let brush = BrushPalette.shared.activeBrush
+        guard brushIsVectorCapable(brush) else {
+            // No-op: only G-Pen is supported on vector layers in V1.
+            return
+        }
+        guard let ribbonRenderer = canvas.ribbonRenderer else { return }
+
+        vectorTargetId = layer.id
+        vectorBeforeStrokes = layer.strokes
+        vectorRawSamples = []
+
+        let maxRadius = brush.radius
+        let minRadius = max(0.5, brush.radius * 0.15)
+        let color = brush.color
+        let opacity = brush.opacity
+
+        let builder = VectorStrokeBuilder(
+            minRadius: minRadius,
+            maxRadius: maxRadius
+        ) { [weak self, weak ribbonRenderer, weak layer] from, ra, to, rb in
+            guard let layer, let ribbonRenderer else { return }
+            ribbonRenderer.drawCapsule(
+                from: from, radiusA: ra,
+                to: to, radiusB: rb,
+                color: color, opacity: opacity,
+                into: layer
+            )
+            self?.needsDisplay = true
+        }
+
+        let s = VectorStrokeSample(
+            x: sample.canvasPoint.x,
+            y: sample.canvasPoint.y,
+            pressure: sample.pressure
+        )
+        vectorRawSamples.append(s)
+        builder.begin(s)
+        vectorBuilder = builder
+    }
+
+    private func continueVectorStroke(at sample: StylusSample) {
+        guard let builder = vectorBuilder else { return }
+        let s = VectorStrokeSample(
+            x: sample.canvasPoint.x,
+            y: sample.canvasPoint.y,
+            pressure: sample.pressure
+        )
+        vectorRawSamples.append(s)
+        builder.continueTo(s)
+    }
+
+    private func endVectorStroke(at sample: StylusSample) {
+        guard let builder = vectorBuilder else { return }
+        let s = VectorStrokeSample(
+            x: sample.canvasPoint.x,
+            y: sample.canvasPoint.y,
+            pressure: sample.pressure
+        )
+        vectorRawSamples.append(s)
+        builder.end(s)
+        vectorBuilder = nil
+
+        guard let layerId = vectorTargetId,
+              let layer = canvas.findLayer(layerId) as? VectorLayer,
+              vectorRawSamples.count >= 1 else {
+            vectorTargetId = nil
+            vectorBeforeStrokes = []
+            vectorRawSamples = []
+            return
+        }
+
+        let brush = BrushPalette.shared.activeBrush
+        let stroke = VectorStroke(
+            kind: .gPen,
+            color: brush.color,
+            opacity: brush.opacity,
+            maxRadius: brush.radius,
+            minRadius: max(0.5, brush.radius * 0.15),
+            samples: vectorRawSamples
+        )
+        // Tiles already painted in-flight; just attach the stroke.
+        layer.appendStrokeWithoutRender(stroke)
+
+        let after = layer.strokes
+        document?.registerVectorStrokeUndo(
+            layerId: layerId,
+            before: vectorBeforeStrokes,
+            after: after
+        )
+        document?.updateChangeCount(.changeDone)
+
+        vectorTargetId = nil
+        vectorBeforeStrokes = []
+        vectorRawSamples = []
+        needsDisplay = true
     }
 
     // MARK: - Selection gesture

@@ -36,20 +36,21 @@ Sections covering installation, first-run setup, a quick-start tutorial, keyboar
 ## Layers
 
 - Multiple bitmap layers in a single document.
+- **Vector layers** (V1 — G-Pen only): strokes are stored as polylines + per-sample pressure and rendered as a continuous swept-path SDF ribbon (no stamp seams). Compose into the layer tree alongside bitmap and group layers. Create with **+ Vector** in the layer panel toolbar.
 - Layer groups (folders) with their own opacity (multiplied through children — pass-through groups in Phase 4; isolated group blending is a future addition).
 - Per-layer visibility, opacity, blend mode.
 - Layer panel: outline view with eye toggle and editable name; drag-to-reorder within and into groups; "M" badge when a layer has a mask.
-- Reorder, rename, duplicate, delete layers; new layer / new group / duplicate / delete buttons in the panel toolbar.
-- Per-layer non-destructive masks: Add Mask / Remove Mask buttons; **Edit: [Layer | Mask]** toggle routes brush input.
+- Reorder, rename, duplicate, delete layers; new layer / **new vector** / new group / duplicate / delete buttons in the panel toolbar.
+- Per-layer non-destructive masks (bitmap layers only — vector layers don't yet support masks): Add Mask / Remove Mask buttons; **Edit: [Layer | Mask]** toggle routes brush input.
 - Blend modes: Normal, Multiply, Screen, Overlay (the full Photoshop set is a Phase 9 follow-up).
 
-**Deferred:** group masks, vector layers, layer thumbnails in the panel, isolated group blending.
+**Deferred:** group masks, vector-layer masks, layer thumbnails in the panel, isolated group blending, per-stroke selection / move / delete on vector layers, soft-edged vector brushes (Marker/Airbrush as vector), vector eraser.
 
 ## Brushes
 
 Four built-in brushes share one data-driven engine. Click any in the **Brushes** picker on the left.
 
-- **G-Pen** — hard-edged round tip; pressure → size and pressure → opacity; tight spacing for inking.
+- **G-Pen** — hard-edged round tip; pressure → size and pressure → opacity; tight spacing for inking. On vector layers, G-Pen produces a true swept-path stroke (pressure modulates radius along a single continuous ribbon; opacity is constant per stroke).
 - **Marker** — soft-edged; pressure → opacity primarily; layers translucently.
 - **Airbrush** — very soft tip with low base opacity; emits continuously while held in place at 60 Hz.
 - **Eraser** — same engine as Marker with destination-out blend so painted strokes remove pixels.
@@ -102,6 +103,13 @@ Pick **Rectangle**, **Ellipse**, or **Lasso** under the **Selection** section in
 - **Mid-stroke navigation**: zoom / pan / rotate during a brush stroke without ending it.
 - **Tab** toggles the left sidebar (Brushes / Selection / Navigate) and the right sidebar (Brush Inspector + Layers).
 - Zoom range: ~5% to 6400%.
+- **Sampling**: the compositor uses linear filtering when zooming out (smooth downscale, no shimmer) and nearest-neighbour when zooming in (crisp pixels, no edge blur). The transition is automatic around 100%.
+
+## Window
+
+- **Window → Fit to Screen** (`⌃⌘F`) — forcibly resizes and repositions the current window to fit inside the visible area of whichever screen contains it (above the dock, below the menu bar). Use this if the window opens off-screen or extends past the dock.
+- **Window → Move to Next Display** (`⌃⌘N`) — cycles the window to the next attached monitor, preserving size (clamped to fit). Beeps if there's only one display.
+- **Window → Minimize** / **Zoom** — standard.
 
 ## Status bar
 
