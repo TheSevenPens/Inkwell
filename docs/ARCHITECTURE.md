@@ -4,6 +4,8 @@ This document records the major architectural decisions for Inkwell, the reasoni
 
 Each decision section follows the same structure: **Decision**, **Context**, **Alternatives considered**, **Pros**, **Cons**, and **Rationale**. Future readers should be able to understand not just *what* we chose, but *why* — and what we gave up to get there.
 
+> **Implementation status.** All 14 decisions below are reflected in the shipping code as of Phase 11. A handful of decision-level commitments are still partially realized (notably decision 6's Display P3 working space — the engine currently runs in sRGB; and decision 9's full undo / timelapse history persistence — the in-memory undo system runs but `history.bin` is not yet written). These gaps are tracked in [`FUTURES.md`](FUTURES.md) under "Phase pass-2 deferrals." Decisions themselves are stable; deferrals are about delivery order, not redesign.
+
 ---
 
 ## 1. UI framework and language: AppKit + Swift, with Metal for rendering

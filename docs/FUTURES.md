@@ -6,9 +6,73 @@ Items here are grouped roughly in order of how likely we are to pick them up, bu
 
 ---
 
-## Major deferred features
+## Phase pass-2 deferrals (closest to picked up)
 
-These are sizable additions we explicitly designed v1 around, in the sense that the architecture preserves the option to add them later without rework.
+These are direct deferrals from Phases 5–11. The architecture and groundwork are already in place; the work is bounded.
+
+### Phase 5 — undo / timelapse history persistence
+
+The format reserves the `history.bin` chunk in the `.inkwell` bundle (per `ARCHITECTURE.md` decision 9). v1 readers ignore its absence; v1 writers don't yet emit it. Persisting the delta stream needs:
+
+- A binary record format for tile-delta and structural-op records (length-prefixed, append-only).
+- Replay code that rebuilds the in-memory undo manager state at document load.
+- Integration with `Document.registerLayerStrokeUndo` and `registerMaskStrokeUndo` to write each step as it commits.
+
+Once shipped, this also unlocks the timelapse playback UI (see "Timelapse playback UI" below).
+
+### Phase 7 Pass 2 — selection completeness
+
+- Polygonal lasso, magic wand (color similarity with tolerance), color range (color match across the canvas).
+- Quick Mask mode: paint the selection with any brush (route brush input to the selection's tile grid; reuse the mask stamp pipeline).
+- Floating-selection transforms (move / scale / rotate the selected pixels as a transient pseudo-layer with commit / cancel).
+- Per-selection feather slider (Gaussian blur applied to the mask).
+- Vector path retention for shape selections (rectangle / ellipse / polygonal lasso) — keeps marching ants crisp under transform and enables lossless transforms before commit.
+- Selection-state undo: selection edits (rect / ellipse / lasso, Select All, Invert, Deselect) aren't yet on the undo stack.
+
+### Phase 9 Pass 2 — layer-aware PSD round-trip
+
+The flat-composite PSD export from Pass 1 covers basic interop but loses the layer hierarchy. Pass 2 is a proper PSD codec:
+
+- Write the layer-and-mask-info section with one record per Inkwell bitmap layer: name, opacity, blend mode, channel data.
+- Map our v1 blend modes (Normal / Multiply / Screen / Overlay) to PSD blend-mode keys; expand to a fuller Photoshop set in the same pass.
+- Write the embedded ICC profile as image resource 1039.
+- Optionally support 16-bit channels.
+- Implement a PSD parser for import that reads the layer tree back as Inkwell bitmap layers and groups (deferring text / smart-object / adjustment layers).
+- Optionally export Inkwell layer masks as PSD layer masks.
+
+See [`PSD_FIDELITY.md`](PSD_FIDELITY.md) for the current fidelity table; Pass 2 fills in the gaps it documents.
+
+### Phase 9 Pass 2 — Display P3 working color space + gamut mapping
+
+`ARCHITECTURE.md` decision 6 commits Inkwell to Display P3 internally with 16-bit channels. The implementation today uses sRGB throughout (8-bit `.rgba8Unorm` tiles, sRGB-tagged exports). Promoting to P3 requires:
+
+- Tile texture format change (`.rgba8Unorm_srgb` or 16-bit P3) and shader updates.
+- Working-space conversion at import and export.
+- Gamut mapping (perceptual or relative-colorimetric) at sRGB export.
+- Embedded P3 profile in PNG / JPEG / PSD output.
+
+### Phase 10 Pass 2 — document scaling, resize, new-document dialog
+
+Pass 1 ships rotate / flip; Pass 2 fills in:
+
+- Document scaling (resample, both up and down) at high quality. Same flatten-and-rebuild pipeline as the rotate / flip ops, with a different draw rect.
+- Crop / resize canvas without resampling, with selectable anchor (center / TL / TR / BL / BR).
+- Arbitrary-angle rotation (45°, etc.).
+- New-document dialog with size, color profile, and DPI presets.
+- Document-level undo for image transforms (Pass 1 clears the stack on transform).
+
+### Phase 11 Pass 2 — color picker, swatches, preferences, cursor preview
+
+- Persistent user-saved swatches with an "Add Current Color" affordance; saved with the document or globally.
+- Custom in-app color picker UI (HSB / RGB sliders, color wheel, hex input integrated into a single panel). The system `NSColorPanel` reached via the color well is fine for now; a richer in-app picker is a polish win.
+- Preferences panel (autosave interval, history budget, gamut mapping policy, default new-doc dimensions).
+- Cursor preview improvements — brush silhouette beyond the current circle outline; tilt indicator; rotation indicator. Most useful when non-circular tip previews ship.
+
+---
+
+## Major deferred features (architecturally pre-cleared)
+
+These are sizable additions designed in from the start: the architecture preserves the option to add them later without rework.
 
 ### Vector layers
 
@@ -60,9 +124,7 @@ Read Photoshop `.abr` brush files and import them into Inkwell's brush format.
 
 ### Timelapse playback UI
 
-The undo delta stream captures everything needed for per-stroke timelapse playback (decisions 5 and 9). What remains is the **playback UI** — controls for speed, scrubbing, export to video.
-
-**Why deferred from v1.** The data is being captured from Phase 5 onward, so v1 documents are forward-compatible. The UI and the video-export path are real work that does not need to land for v1 to be useful.
+The undo delta stream captures everything needed for per-stroke timelapse playback (decisions 5 and 9). What remains is the **playback UI** — controls for speed, scrubbing, export to video — plus the underlying `history.bin` write (a Phase 5 Pass 2 prerequisite — see above).
 
 **Architectural readiness.** The `history.bin` chunk in the bundle (decision 14) holds the data with timestamps. Playback is straightforward: read deltas in order, apply each to the document, render frames. Video export uses `AVFoundation`.
 
@@ -99,23 +161,23 @@ Decision 6 commits Inkwell to gamma-space blending by default to match Photoshop
 
 ### Active DPI
 
-DPI in v1 is metadata-only. Brush sizes are in pixels. For print-first workflows, users may want brush sizes in millimeters or inches and document dimensions in physical units.
+DPI in v1 is metadata-only (and not yet exposed in the UI). Brush sizes are in pixels. For print-first workflows, users may want brush sizes in millimeters or inches and document dimensions in physical units.
 
 **Plan.** A per-document "use physical units" toggle, with brush size editors and document dialogs that translate to the chosen unit. The engine still works in pixels internally; the UI translates at the boundary.
-
----
-
-### Vector path retention for shape selections
-
-Decision 12 allows shape-tool selections (rectangle, ellipse, polygonal lasso) to retain a vector path *additionally* to the raster mask. v1 may ship with raster-only selections if marching-ants quality is acceptable. The vector path improves marching-ants crispness and enables lossless transforms before commit.
-
-**Plan.** Add the vector-path retention if Phase 7's UX checkpoint reveals a quality gap; otherwise keep raster-only.
 
 ---
 
 ### Group masks
 
 Decision 7 supports masks per layer. Group masks (one mask applied to an entire group) are the natural extension. Architecturally identical to layer masks — same tile structure, same rendering — but require UI affordances and a clear interaction model with per-layer masks within the group.
+
+---
+
+### Isolated group blending
+
+Phase 4 ships pass-through groups: a group's opacity multiplies through children, but its blend mode is ignored at composite time. Isolated groups would composite their children into a transient buffer first and then blend that buffer onto the parent according to the group's own blend mode (Photoshop's default mode for groups other than "Pass Through").
+
+**Architectural readiness.** Requires a multi-encoder / multi-pass renderer change to allocate viewport-sized transient textures per isolated group per frame. The compositor will need to walk the tree post-order rather than directly to the drawable.
 
 ---
 
@@ -179,14 +241,14 @@ Decision 11 explicitly flags pressure curves (cubic Bézier with two control poi
 
 Several v1 behaviors rely on modifier keys that first-time users will not discover unaided:
 
-- Cmd-during-brush → eyedropper
-- Option-during-brush → eraser
+- Cmd-click → eyedropper
+- Option-during-stroke → eraser
 - Tab → toggle panels
-- Q (or chosen key) → Quick Mask mode
 - Space + drag → pan
 - R + drag → rotate
+- Shift+R → reset rotation
 
-**Plan.** These are addressed partly by onboarding (Phase 12) and partly by the user manual (`USERMANUAL.md` walkthrough sections, when written). Worth a revisit after launch based on user-feedback patterns: which conventions land naturally and which need surfacing in the UI.
+**Plan.** These are addressed partly by Phase 12 onboarding and partly by the user manual walkthrough sections (when written). Worth a revisit after launch based on user-feedback patterns: which conventions land naturally and which need surfacing in the UI.
 
 ---
 
@@ -198,7 +260,13 @@ Decision 10's eraser-end-of-stylus behavior is industry standard but invisible u
 
 ### PSD round-trip fidelity gaps
 
-Anything Inkwell can do that PSD cannot represent (or represents differently) loses information on round-trip. The fidelity table makes this explicit, but users who do not read the table may be surprised. Over time, the table should become a list of resolved or accepted gaps; the UI should warn at export when a feature in the document is about to be downgraded.
+Anything Inkwell can do that PSD cannot represent (or represents differently) loses information on round-trip. The fidelity table in [`PSD_FIDELITY.md`](PSD_FIDELITY.md) makes this explicit, but users who do not read the table may be surprised. Over time, the table should become a list of resolved or accepted gaps; the UI should warn at export when a feature in the document is about to be downgraded.
+
+---
+
+### R-drag rotation pivot
+
+Decision 13 specifies "R + drag, cursor-anchored." The Phase 8 implementation anchors R-drag rotation at the **view center**, not the cursor at drag start. The view-center pivot gives a usable angular reference; cursor-pivot has zero-radius math at drag start that needs a different UX (e.g., requiring an initial drag direction before rotation begins). Worth revisiting if the current feel is wrong on a real tablet.
 
 ---
 
@@ -218,6 +286,6 @@ These are mentioned for completeness; none are committed.
 
 ## How to use this document
 
-- When v1 is complete and we plan v1.x or v2, this document is the starting point.
+- When v1 ships and we plan v1.x or v2, this document is the starting point.
 - When considering any change to the v1 architecture, check whether this document anticipates the change — many "new" ideas are already tracked here with the architectural readiness already in place.
-- When closing out a deferred item, move it from this document into `ARCHITECTURE.md` (as a new decision), `USERMANUAL.md` (as a feature), and `PLAN.md` (as a phase) — and remove the entry here.
+- When closing out a deferred item, move it from this document into `ARCHITECTURE.md` (as a new decision if applicable), `USERMANUAL.md` (as a feature), and `PLAN.md` (as a phase or pass) — and remove the entry here.
