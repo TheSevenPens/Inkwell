@@ -69,6 +69,17 @@ final class Canvas {
         notifyChanged()
     }
 
+    /// Replace the entire layer tree, e.g. when opening a document.
+    func replaceLayers(_ newRoots: [LayerNode], activeLayerId: UUID?) {
+        rootLayers = newRoots
+        if let activeLayerId, findInTree(activeLayerId, in: newRoots) != nil {
+            self.activeLayerId = activeLayerId
+        } else {
+            self.activeLayerId = firstSelectableLayer()?.id
+        }
+        notifyChanged()
+    }
+
     // MARK: - Tree queries
 
     func findLayer(_ id: UUID) -> LayerNode? {

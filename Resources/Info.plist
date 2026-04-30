@@ -11,7 +11,7 @@
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.5.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
@@ -22,19 +22,54 @@
     <string>NSApplication</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.thesevenpens.inkwell-document</string>
+            <key>UTTypeDescription</key>
+            <string>Inkwell Document</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>com.apple.package</string>
+                <string>public.composite-content</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>inkwell</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>
             <key>CFBundleTypeName</key>
-            <string>PNG Image</string>
+            <string>Inkwell Document</string>
             <key>CFBundleTypeRole</key>
             <string>Editor</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.thesevenpens.inkwell-document</string>
+            </array>
+            <key>LSTypeIsPackage</key>
+            <true/>
+            <key>NSDocumentClass</key>
+            <string>Inkwell.Document</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>PNG Image</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
             <key>LSItemContentTypes</key>
             <array>
                 <string>public.png</string>
             </array>
             <key>LSHandlerRank</key>
-            <string>Alternate</string>
+            <string>None</string>
             <key>NSDocumentClass</key>
             <string>Inkwell.Document</string>
         </dict>

@@ -1,5 +1,47 @@
 import AppKit
 
+/// Singleton that populates the File → Open Recent submenu on demand.
+/// NSDocumentController's recent-documents tracking fires automatically when
+/// documents open or save successfully; this class just renders the list.
+final class RecentDocumentsMenu: NSObject, NSMenuDelegate {
+    static let shared = RecentDocumentsMenu()
+
+    func attach(to menu: NSMenu) {
+        menu.delegate = self
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let urls = NSDocumentController.shared.recentDocumentURLs
+        if urls.isEmpty {
+            let empty = menu.addItem(withTitle: "No Recent Documents", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            return
+        }
+        for url in urls {
+            let item = menu.addItem(
+                withTitle: url.lastPathComponent,
+                action: #selector(openRecent(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = url
+        }
+        menu.addItem(.separator())
+        let clear = menu.addItem(
+            withTitle: "Clear Menu",
+            action: #selector(NSDocumentController.clearRecentDocuments(_:)),
+            keyEquivalent: ""
+        )
+        clear.target = NSDocumentController.shared
+    }
+
+    @objc private func openRecent(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, _ in }
+    }
+}
+
 func installMainMenu() {
     let mainMenu = NSMenu()
 
@@ -50,6 +92,10 @@ func installMainMenu() {
         action: #selector(NSDocumentController.openDocument(_:)),
         keyEquivalent: "o"
     )
+    let openRecent = fileMenu.addItem(withTitle: "Open Recent", action: nil, keyEquivalent: "")
+    let openRecentMenu = NSMenu(title: "Open Recent")
+    openRecent.submenu = openRecentMenu
+    RecentDocumentsMenu.shared.attach(to: openRecentMenu)
     fileMenu.addItem(.separator())
     fileMenu.addItem(
         withTitle: "Close",
