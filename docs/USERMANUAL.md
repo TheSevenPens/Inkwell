@@ -56,9 +56,13 @@ Four built-in brushes share one data-driven engine. Click any in the **Brushes**
 - **Marker** — soft-edged; pressure → opacity primarily; layers translucently.
 - **Airbrush** — very soft tip with low base opacity; emits continuously while held in place at 60 Hz.
 - **Eraser** — on bitmap layers, same engine as Marker with destination-out blend so painted strokes remove pixels. On vector layers, hit-tests strokes; what gets removed is controlled by **Edit → Vector Eraser Mode**:
-  - **Whole Stroke** (default): any stroke the eraser disc touches is deleted entirely.
-  - **Touched Region**: each touched stroke is split at the raw stylus samples that fall inside the eraser disc; the runs of consecutive non-erased samples remain as new sub-strokes. Cuts snap to sample boundaries — dense polylines give clean cuts, sparse ones can leave a visible stub.
-  - **To Intersection**: from the closest sample on the touched stroke to the eraser center, walks forward and backward until a segment of the stroke crosses either a non-adjacent segment of itself or any segment of any other stroke. Removes everything between those two stops. Useful for cleaning up linework where lines cross.
+  - **Whole Stroke** (default): any stroke the eraser disc touches is deleted entirely. Caveat: barely grazing the tail of a stroke still deletes the whole thing — the eraser radius is the only knob, not "how much of the stroke was crossed."
+  - **Touched Region**: each touched stroke is split at the raw stylus samples that fall inside the eraser disc; the runs of consecutive non-erased samples remain as new sub-strokes. Caveat: cuts snap to sample boundaries — dense polylines give clean cuts, sparse ones can leave a visible stub on either side of the gap. (Sub-pixel disc-edge clipping is a V2 follow-up; tracked in `FUTURES.md`.)
+  - **To Intersection**: from the closest sample on the touched stroke to the eraser center, walks forward and backward until a segment of the stroke crosses either a non-adjacent segment of itself or any segment of any other stroke. Removes everything between those two stops. Useful for cleaning up linework where lines cross. Caveats:
+    - "Crossing" is a strict transversal — exactly-collinear or exactly-touching segments don't count. In practice sample quantization makes that vanishingly rare.
+    - "Self-intersection" only counts non-adjacent segments; two consecutive segments sharing a sample never trigger a stop.
+    - When no crossing is found in a direction, the eraser walks all the way to the stroke's tip on that side (the stroke is trimmed).
+  - The whole eraser drag is **one undo step** — Cmd+Z restores everything you erased in that drag.
   - The mode persists across launches.
 
 Brush settings (live-edited in the right inspector):
