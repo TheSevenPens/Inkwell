@@ -3,6 +3,11 @@ import Metal
 import MetalKit
 import simd
 
+private enum StrokeTarget {
+    case layer(layerId: UUID)
+    case mask(layerId: UUID)
+}
+
 final class CanvasView: MTKView {
     private weak var document: Document?
     private let canvas: Canvas
@@ -13,8 +18,9 @@ final class CanvasView: MTKView {
     private var tipTexture: (any MTLTexture)?
 
     private var emitter: StrokeEmitter?
-    private var strokeLayerId: UUID?
-    private var strokeBeforeSnapshot = BitmapLayer.TileSnapshot.empty
+    private var strokeTarget: StrokeTarget?
+    private var strokeBeforeLayer = BitmapLayer.TileSnapshot.empty
+    private var strokeBeforeMask = LayerMask.TileSnapshot.empty
     private var strokeAffectedCoords: Set<TileCoord> = []
 
     private var lastSample: StylusSample?
@@ -214,13 +220,14 @@ final class CanvasView: MTKView {
     }
 
     private func beginStroke(at sample: StylusSample) {
-        // Pin the stroke to the active bitmap layer at stroke start.
-        guard let activeBitmap = canvas.activeBitmapLayer else {
-            // No bitmap layer selected (e.g., a group is active). Silently no-op.
-            return
+        guard let activeBitmap = canvas.activeBitmapLayer else { return }
+        if canvas.editingMask, activeBitmap.mask != nil {
+            strokeTarget = .mask(layerId: activeBitmap.id)
+        } else {
+            strokeTarget = .layer(layerId: activeBitmap.id)
         }
-        strokeLayerId = activeBitmap.id
-        strokeBeforeSnapshot = .empty
+        strokeBeforeLayer = .empty
+        strokeBeforeMask = .empty
         strokeAffectedCoords = []
         rebuildTipTextureIfNeeded()
         lastSample = sample
@@ -235,8 +242,7 @@ final class CanvasView: MTKView {
 
     private func dispatchSample(_ sample: StylusSample) {
         guard let stampRenderer, let tipTex = tipTexture,
-              let layerId = strokeLayerId,
-              let layer = canvas.findLayer(layerId) as? BitmapLayer else { return }
+              let strokeTarget else { return }
         let brush = BrushPalette.shared.activeBrush
 
         let sizePressure = lerp(1.0, brush.pressureToSize.evaluate(sample.pressure),
@@ -267,39 +273,81 @@ final class CanvasView: MTKView {
             width: halfBox * 2,
             height: halfBox * 2
         )
-        let coords = layer.tilesIntersecting(bbox)
-        let newCoords = coords.filter { !strokeAffectedCoords.contains($0) }
-        if !newCoords.isEmpty {
-            let snap = layer.snapshotTiles(Set(newCoords))
-            for (k, v) in snap.presentTiles {
-                strokeBeforeSnapshot.presentTiles[k] = v
-            }
-            strokeBeforeSnapshot.absentTiles.formUnion(snap.absentTiles)
-            strokeAffectedCoords.formUnion(newCoords)
-        }
 
-        let dispatch = StampDispatch(
-            canvasCenter: sample.canvasPoint,
-            radius: radius,
-            alpha: Float(alpha),
-            angleRadians: Float(tiltAngle),
-            color: brush.color.simd,
-            blendMode: brush.blendMode
-        )
-        stampRenderer.applyStamp(dispatch, tipTexture: tipTex, layer: layer)
+        switch strokeTarget {
+        case .layer(let layerId):
+            guard let layer = canvas.findLayer(layerId) as? BitmapLayer else { return }
+            let coords = layer.tilesIntersecting(bbox)
+            let newCoords = coords.filter { !strokeAffectedCoords.contains($0) }
+            if !newCoords.isEmpty {
+                let snap = layer.snapshotTiles(Set(newCoords))
+                for (k, v) in snap.presentTiles {
+                    strokeBeforeLayer.presentTiles[k] = v
+                }
+                strokeBeforeLayer.absentTiles.formUnion(snap.absentTiles)
+                strokeAffectedCoords.formUnion(newCoords)
+            }
+            let dispatch = StampDispatch(
+                canvasCenter: sample.canvasPoint,
+                radius: radius,
+                alpha: Float(alpha),
+                angleRadians: Float(tiltAngle),
+                color: brush.color.simd,
+                blendMode: brush.blendMode
+            )
+            stampRenderer.applyStamp(dispatch, tipTexture: tipTex, layer: layer)
+
+        case .mask(let layerId):
+            guard let layer = canvas.findLayer(layerId) as? BitmapLayer,
+                  let mask = layer.mask else { return }
+            let coords = mask.tilesIntersecting(bbox)
+            let newCoords = coords.filter { !strokeAffectedCoords.contains($0) }
+            if !newCoords.isEmpty {
+                let snap = mask.snapshotTiles(Set(newCoords))
+                for (k, v) in snap.presentTiles {
+                    strokeBeforeMask.presentTiles[k] = v
+                }
+                strokeBeforeMask.absentTiles.formUnion(snap.absentTiles)
+                strokeAffectedCoords.formUnion(newCoords)
+            }
+            // Mask painting: stamp value = brush color luminance (Rec. 709).
+            let c = brush.color.simd
+            let luminance = 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z
+            let dispatch = StampDispatch(
+                canvasCenter: sample.canvasPoint,
+                radius: radius,
+                alpha: Float(alpha),
+                angleRadians: Float(tiltAngle),
+                color: SIMD4<Float>(luminance, luminance, luminance, 1.0),
+                blendMode: .normal
+            )
+            stampRenderer.applyMaskStamp(dispatch, tipTexture: tipTex, mask: mask)
+        }
         needsDisplay = true
     }
 
     private func commitUndoIfNeeded() {
-        guard let document, let layerId = strokeLayerId,
-              !strokeAffectedCoords.isEmpty,
-              let layer = canvas.findLayer(layerId) as? BitmapLayer else { return }
-        let after = layer.snapshotTiles(strokeAffectedCoords)
-        document.registerStrokeUndo(layerId: layerId, before: strokeBeforeSnapshot, after: after)
-        document.updateChangeCount(.changeDone)
-        strokeBeforeSnapshot = .empty
-        strokeAffectedCoords = []
-        strokeLayerId = nil
+        defer {
+            strokeTarget = nil
+            strokeBeforeLayer = .empty
+            strokeBeforeMask = .empty
+            strokeAffectedCoords = []
+        }
+        guard let document, let target = strokeTarget,
+              !strokeAffectedCoords.isEmpty else { return }
+        switch target {
+        case .layer(let layerId):
+            guard let layer = canvas.findLayer(layerId) as? BitmapLayer else { return }
+            let after = layer.snapshotTiles(strokeAffectedCoords)
+            document.registerLayerStrokeUndo(layerId: layerId, before: strokeBeforeLayer, after: after)
+            document.updateChangeCount(.changeDone)
+        case .mask(let layerId):
+            guard let layer = canvas.findLayer(layerId) as? BitmapLayer,
+                  let mask = layer.mask else { return }
+            let after = mask.snapshotTiles(strokeAffectedCoords)
+            document.registerMaskStrokeUndo(layerId: layerId, before: strokeBeforeMask, after: after)
+            document.updateChangeCount(.changeDone)
+        }
     }
 
     // MARK: - Mouse-moved (cursor + airbrush)

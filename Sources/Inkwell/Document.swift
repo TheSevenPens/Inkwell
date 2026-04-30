@@ -68,9 +68,9 @@ final class Document: NSDocument {
         undoManager?.removeAllActions()
     }
 
-    // MARK: - Undo (per-layer per-tile, per ARCHITECTURE.md decision 9)
+    // MARK: - Undo (per ARCHITECTURE.md decision 9)
 
-    func registerStrokeUndo(
+    func registerLayerStrokeUndo(
         layerId: UUID,
         before: BitmapLayer.TileSnapshot,
         after: BitmapLayer.TileSnapshot
@@ -78,11 +78,14 @@ final class Document: NSDocument {
         guard let undoManager, !before.isEmpty || !after.isEmpty else { return }
         undoManager.setActionName("Brush Stroke")
         undoManager.registerUndo(withTarget: self) { [weak self] _ in
-            self?.applyAndRegisterInverse(layerId: layerId, snapshot: before)
+            self?.applyLayerSnapshotAndRegisterInverse(layerId: layerId, snapshot: before)
         }
     }
 
-    private func applyAndRegisterInverse(layerId: UUID, snapshot: BitmapLayer.TileSnapshot) {
+    private func applyLayerSnapshotAndRegisterInverse(
+        layerId: UUID,
+        snapshot: BitmapLayer.TileSnapshot
+    ) {
         guard let layer = canvas.findLayer(layerId) as? BitmapLayer else { return }
         let affected = Set(snapshot.presentTiles.keys).union(snapshot.absentTiles)
         let previous = layer.snapshotTiles(affected)
@@ -90,7 +93,35 @@ final class Document: NSDocument {
         onCanvasChanged?()
         undoManager?.setActionName("Brush Stroke")
         undoManager?.registerUndo(withTarget: self) { [weak self] _ in
-            self?.applyAndRegisterInverse(layerId: layerId, snapshot: previous)
+            self?.applyLayerSnapshotAndRegisterInverse(layerId: layerId, snapshot: previous)
+        }
+    }
+
+    func registerMaskStrokeUndo(
+        layerId: UUID,
+        before: LayerMask.TileSnapshot,
+        after: LayerMask.TileSnapshot
+    ) {
+        guard let undoManager, !before.isEmpty || !after.isEmpty else { return }
+        undoManager.setActionName("Mask Stroke")
+        undoManager.registerUndo(withTarget: self) { [weak self] _ in
+            self?.applyMaskSnapshotAndRegisterInverse(layerId: layerId, snapshot: before)
+        }
+    }
+
+    private func applyMaskSnapshotAndRegisterInverse(
+        layerId: UUID,
+        snapshot: LayerMask.TileSnapshot
+    ) {
+        guard let layer = canvas.findLayer(layerId) as? BitmapLayer,
+              let mask = layer.mask else { return }
+        let affected = Set(snapshot.presentTiles.keys).union(snapshot.absentTiles)
+        let previous = mask.snapshotTiles(affected)
+        mask.applyTileSnapshot(snapshot)
+        onCanvasChanged?()
+        undoManager?.setActionName("Mask Stroke")
+        undoManager?.registerUndo(withTarget: self) { [weak self] _ in
+            self?.applyMaskSnapshotAndRegisterInverse(layerId: layerId, snapshot: previous)
         }
     }
 }

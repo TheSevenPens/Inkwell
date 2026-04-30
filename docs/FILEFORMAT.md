@@ -69,7 +69,8 @@ A discriminated union by the `type` field:
   "name": "Layer 1",
   "visible": true,
   "opacity": 1.0,
-  "blendMode": "normal"
+  "blendMode": "normal",
+  "hasMask": true
 }
 ```
 
@@ -78,6 +79,7 @@ A discriminated union by the `type` field:
 - **`visible`** (bool, required).
 - **`opacity`** (float, required). 0.0 – 1.0.
 - **`blendMode`** (string, required). One of: `"normal"`, `"multiply"`, `"screen"`, `"overlay"`. The full Photoshop set arrives in Phase 9 with the PSD fidelity table.
+- **`hasMask`** (bool, optional, added in Phase 6). When `true`, the layer has an attached mask; mask tiles for this layer (if any are painted) appear in `tiles.bin` with the mask flag bit set. Absent / `false` / missing field = no mask. Backward-compatible with Phase 5 files.
 
 ### Group layer data
 
@@ -137,9 +139,18 @@ The reader stops at end-of-file. A truncated final record (insufficient bytes fo
 
 There is no ordering guarantee within `tiles.bin`. The reader builds a map of `(layerId, tileX, tileY) → bytes` and assigns to layers found in the manifest. Records whose `layerId` does not match any layer in the manifest are silently dropped (forward compatibility for layers that may exist in newer manifest schemas).
 
-### Mask tiles (reserved)
+### Mask tiles
 
-When `flags & 1 == 1`, the record is a mask tile (single-channel data placed in an attached layer mask). v1 readers ignore mask records; they will be supported in Phase 6.
+When `flags & 1 == 1`, the record is a mask tile attached to the layer identified by `layerId`.
+
+Mask tile data:
+- 256 × 256 pixels.
+- 1 byte per pixel (single channel, `.r8Unorm`).
+- `length` = 65536 (256 × 256).
+- Rows top-down; pixel value 255 = fully visible, 0 = fully hidden.
+- Default for any tile not present in the file: 255 (fully visible). Painting a mask tile that hides nothing is a no-op; no record is written.
+
+Phase 5 readers (which lacked mask support) silently dropped these records. Phase 6 readers consume them; if a layer's manifest entry has `hasMask: true` but no mask tiles are present, the reader still attaches an empty `LayerMask`.
 
 ---
 

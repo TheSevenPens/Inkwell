@@ -5,10 +5,9 @@ extension NSPasteboard.PasteboardType {
     static let inkwellLayer = NSPasteboard.PasteboardType("com.thesevenpens.Inkwell.layer")
 }
 
-/// Phase 4 layer panel: outline view with eye toggle and editable names,
-/// active-layer opacity / blend-mode editor at the top, and a row of layer
-/// management buttons at the bottom. Drag-to-reorder works within and into
-/// groups; layers cannot be dropped into themselves.
+/// Phase 6 layer panel: outline view with eye toggle, mask indicator, and editable
+/// names. Active-layer opacity, blend mode, edit target (Layer | Mask), and mask
+/// management at the top. Drag-to-reorder.
 final class LayerPanelView: NSView {
     private(set) weak var canvas: Canvas?
 
@@ -17,6 +16,9 @@ final class LayerPanelView: NSView {
     private var opacitySlider: NSSlider!
     private var opacityValueLabel: NSTextField!
     private var blendPopup: NSPopUpButton!
+    private var editTargetControl: NSSegmentedControl!
+    private var addMaskButton: NSButton!
+    private var removeMaskButton: NSButton!
 
     private var refreshing = false
 
@@ -40,6 +42,22 @@ final class LayerPanelView: NSView {
         let title = NSTextField(labelWithString: "Layers")
         title.font = .boldSystemFont(ofSize: 12)
         title.textColor = .secondaryLabelColor
+
+        // Edit-target row
+        let editRow = NSStackView()
+        editRow.orientation = .horizontal
+        editRow.spacing = 6
+        let editLabel = NSTextField(labelWithString: "Edit")
+        editLabel.font = .systemFont(ofSize: 11)
+        editLabel.textColor = .secondaryLabelColor
+        editTargetControl = NSSegmentedControl(labels: ["Layer", "Mask"], trackingMode: .selectOne, target: self, action: #selector(editTargetChanged(_:)))
+        editTargetControl.controlSize = .small
+        editTargetControl.selectedSegment = 0
+        editLabel.translatesAutoresizingMaskIntoConstraints = false
+        editTargetControl.translatesAutoresizingMaskIntoConstraints = false
+        editRow.addArrangedSubview(editLabel)
+        editRow.addArrangedSubview(editTargetControl)
+        editLabel.widthAnchor.constraint(equalToConstant: 60).isActive = true
 
         // Opacity row
         let opacityRow = NSStackView()
@@ -69,7 +87,7 @@ final class LayerPanelView: NSView {
         opLabel.widthAnchor.constraint(equalToConstant: 60).isActive = true
         opacityValueLabel.widthAnchor.constraint(equalToConstant: 40).isActive = true
 
-        // Blend mode row
+        // Blend row
         let blendRow = NSStackView()
         blendRow.orientation = .horizontal
         blendRow.spacing = 6
@@ -116,10 +134,10 @@ final class LayerPanelView: NSView {
         scrollView.borderType = .noBorder
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
-        // Bottom toolbar
-        let toolbar = NSStackView()
-        toolbar.orientation = .horizontal
-        toolbar.spacing = 4
+        // Bottom toolbars (two rows)
+        let layerToolbar = NSStackView()
+        layerToolbar.orientation = .horizontal
+        layerToolbar.spacing = 4
         let newLayerBtn = NSButton(title: "+ Layer", target: self, action: #selector(newLayer(_:)))
         let newGroupBtn = NSButton(title: "+ Group", target: self, action: #selector(newGroup(_:)))
         let dupBtn = NSButton(title: "Dup", target: self, action: #selector(duplicateLayer(_:)))
@@ -127,7 +145,18 @@ final class LayerPanelView: NSView {
         for b in [newLayerBtn, newGroupBtn, dupBtn, delBtn] {
             b.bezelStyle = .roundRect
             b.controlSize = .small
-            toolbar.addArrangedSubview(b)
+            layerToolbar.addArrangedSubview(b)
+        }
+
+        let maskToolbar = NSStackView()
+        maskToolbar.orientation = .horizontal
+        maskToolbar.spacing = 4
+        addMaskButton = NSButton(title: "Add Mask", target: self, action: #selector(addMask(_:)))
+        removeMaskButton = NSButton(title: "Remove Mask", target: self, action: #selector(removeMask(_:)))
+        for b in [addMaskButton!, removeMaskButton!] {
+            b.bezelStyle = .roundRect
+            b.controlSize = .small
+            maskToolbar.addArrangedSubview(b)
         }
 
         let master = NSStackView()
@@ -138,12 +167,14 @@ final class LayerPanelView: NSView {
         master.distribution = .fill
         master.translatesAutoresizingMaskIntoConstraints = false
         master.addArrangedSubview(title)
+        master.addArrangedSubview(editRow)
         master.addArrangedSubview(opacityRow)
         master.addArrangedSubview(blendRow)
         master.addArrangedSubview(scrollView)
-        master.addArrangedSubview(toolbar)
+        master.addArrangedSubview(layerToolbar)
+        master.addArrangedSubview(maskToolbar)
         master.setCustomSpacing(8, after: blendRow)
-        master.setCustomSpacing(8, after: scrollView)
+        master.setCustomSpacing(6, after: scrollView)
 
         addSubview(master)
         NSLayoutConstraint.activate([
@@ -177,6 +208,13 @@ final class LayerPanelView: NSView {
                 blendPopup.select(item)
             }
         }
+        // Mask UI state
+        let activeBitmap = canvas.activeBitmapLayer
+        let hasMask = activeBitmap?.mask != nil
+        editTargetControl.setEnabled(hasMask, forSegment: 1)
+        editTargetControl.selectedSegment = canvas.editingMask ? 1 : 0
+        addMaskButton.isEnabled = activeBitmap != nil && !hasMask
+        removeMaskButton.isEnabled = hasMask
     }
 
     @objc private func opacityChanged(_ sender: NSSlider) {
@@ -191,13 +229,13 @@ final class LayerPanelView: NSView {
         canvas.setBlendMode(activeId, mode: mode)
     }
 
-    @objc private func newLayer(_ sender: Any?) {
-        canvas?.addNewBitmapLayer()
+    @objc private func editTargetChanged(_ sender: NSSegmentedControl) {
+        guard !refreshing, let canvas else { return }
+        canvas.setEditingMask(sender.selectedSegment == 1)
     }
 
-    @objc private func newGroup(_ sender: Any?) {
-        canvas?.addNewGroup()
-    }
+    @objc private func newLayer(_ sender: Any?) { canvas?.addNewBitmapLayer() }
+    @objc private func newGroup(_ sender: Any?) { canvas?.addNewGroup() }
 
     @objc private func duplicateLayer(_ sender: Any?) {
         guard let canvas, let id = canvas.activeLayerId else { return }
@@ -208,6 +246,9 @@ final class LayerPanelView: NSView {
         guard let canvas, let id = canvas.activeLayerId else { return }
         canvas.deleteLayer(id)
     }
+
+    @objc private func addMask(_ sender: Any?) { canvas?.addMaskToActiveLayer() }
+    @objc private func removeMask(_ sender: Any?) { canvas?.removeMaskFromActiveLayer() }
 
     @objc private func outlineClicked(_ sender: Any?) {
         guard !refreshing, let canvas else { return }
@@ -230,9 +271,6 @@ final class LayerPanelView: NSView {
 extension LayerPanelView: NSOutlineViewDataSource {
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         if item == nil {
-            // Top-of-panel = first array entry, but our convention is rootLayers[0] = topmost.
-            // NSOutlineView shows items in iteration order, which IS top-down. We'll feed them
-            // in array order so display matches array order (top of array = top of panel).
             return canvas?.rootLayers.count ?? 0
         }
         if let group = item as? GroupLayer {
@@ -255,8 +293,6 @@ extension LayerPanelView: NSOutlineViewDataSource {
         item is GroupLayer
     }
 
-    // MARK: Drag
-
     func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> NSPasteboardWriting? {
         guard let layer = item as? LayerNode else { return nil }
         let pbItem = NSPasteboardItem()
@@ -270,7 +306,6 @@ extension LayerPanelView: NSOutlineViewDataSource {
         proposedItem item: Any?,
         proposedChildIndex index: Int
     ) -> NSDragOperation {
-        // Disallow drop ON an item (we want only between-item drops to keep things sane).
         if index == NSOutlineViewDropOnItemIndex { return [] }
         return .move
     }
@@ -287,7 +322,6 @@ extension LayerPanelView: NSOutlineViewDataSource {
         for pbItem in pbItems {
             guard let idString = pbItem.string(forType: .inkwellLayer),
                   let id = UUID(uuidString: idString) else { continue }
-            // Adjust index if moving within the same parent and the source was earlier in the list.
             var insertIndex = index
             if let parent = canvas.parentOfLayer(id), parent === newParent,
                let srcIndex = parent.children.firstIndex(where: { $0.id == id }),
@@ -332,6 +366,7 @@ private final class LayerRowCell: NSTableCellView {
 
     private let eyeButton = NSButton()
     private let nameField = NSTextField()
+    private let maskBadge = NSTextField(labelWithString: "")
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -357,16 +392,25 @@ private final class LayerRowCell: NSTableCellView {
         nameField.font = .systemFont(ofSize: 12)
         nameField.translatesAutoresizingMaskIntoConstraints = false
 
+        maskBadge.font = .boldSystemFont(ofSize: 10)
+        maskBadge.textColor = .secondaryLabelColor
+        maskBadge.alignment = .right
+        maskBadge.translatesAutoresizingMaskIntoConstraints = false
+
         addSubview(eyeButton)
         addSubview(nameField)
+        addSubview(maskBadge)
         NSLayoutConstraint.activate([
             eyeButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
             eyeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             eyeButton.widthAnchor.constraint(equalToConstant: 22),
             eyeButton.heightAnchor.constraint(equalToConstant: 18),
             nameField.leadingAnchor.constraint(equalTo: eyeButton.trailingAnchor, constant: 6),
-            nameField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
-            nameField.centerYAnchor.constraint(equalTo: centerYAnchor)
+            nameField.trailingAnchor.constraint(equalTo: maskBadge.leadingAnchor, constant: -4),
+            nameField.centerYAnchor.constraint(equalTo: centerYAnchor),
+            maskBadge.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            maskBadge.centerYAnchor.constraint(equalTo: centerYAnchor),
+            maskBadge.widthAnchor.constraint(equalToConstant: 18)
         ])
     }
 
@@ -377,6 +421,11 @@ private final class LayerRowCell: NSTableCellView {
         let symbolName = node.isVisible ? "eye" : "eye.slash"
         if let img = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) {
             eyeButton.image = img
+        }
+        if let bitmap = node as? BitmapLayer, bitmap.mask != nil {
+            maskBadge.stringValue = "M"
+        } else {
+            maskBadge.stringValue = ""
         }
     }
 

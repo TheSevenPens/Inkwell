@@ -24,6 +24,12 @@ final class Canvas {
     private(set) var rootLayers: [LayerNode] = []
     private(set) var activeLayerId: UUID?
 
+    /// Whether brush input targets the active layer's mask (true) or its pixels (false).
+    /// Has no effect when the active layer has no mask.
+    private(set) var editingMask: Bool = false
+
+    private(set) lazy var defaultMaskTexture: any MTLTexture = LayerMaskTextures.makeDefaultMask(device: device)
+
     private var observers: [() -> Void] = []
 
     init(width: Int, height: Int, device: any MTLDevice) throws {
@@ -66,6 +72,35 @@ final class Canvas {
     func setActiveLayer(_ id: UUID) {
         guard findLayer(id) != nil else { return }
         activeLayerId = id
+        // If the new active layer has no mask, reset edit target to layer.
+        if (findLayer(id) as? BitmapLayer)?.mask == nil {
+            editingMask = false
+        }
+        notifyChanged()
+    }
+
+    func setEditingMask(_ flag: Bool) {
+        // Only meaningful if the active layer has a mask.
+        if flag, (activeBitmapLayer?.mask == nil) { return }
+        guard editingMask != flag else { return }
+        editingMask = flag
+        notifyChanged()
+    }
+
+    /// Add a mask to the active bitmap layer. No-op if no active bitmap layer or
+    /// it already has a mask.
+    func addMaskToActiveLayer() {
+        guard let layer = activeBitmapLayer, layer.mask == nil else { return }
+        layer.mask = LayerMask(device: device, canvasWidth: width, canvasHeight: height)
+        editingMask = true
+        notifyChanged()
+    }
+
+    /// Remove the mask from the active bitmap layer (discards the mask data).
+    func removeMaskFromActiveLayer() {
+        guard let layer = activeBitmapLayer, layer.mask != nil else { return }
+        layer.mask = nil
+        editingMask = false
         notifyChanged()
     }
 

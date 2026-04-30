@@ -2,36 +2,21 @@ import Foundation
 import CoreGraphics
 import Metal
 
-/// A bitmap layer: a sparse grid of GPU-resident tile textures, plus standard
-/// per-layer attributes (visibility, opacity, blend mode). Phase 4 — only kind
-/// of leaf layer that exists; vector / text / adjustment kinds arrive later.
-final class BitmapLayer: LayerNode {
-    let id: UUID
-    var name: String
-    var isVisible: Bool = true
-    var opacity: CGFloat = 1.0
-    var blendMode: LayerBlendMode = .normal
-
+/// A single-channel mask attached to a `BitmapLayer`. Stored as a sparse grid of
+/// `.r8Unorm` tile textures.
+///
+/// Convention: an **absent tile is fully white (1.0)** — i.e., the layer is fully
+/// visible at that location. Only edited regions allocate tiles. The renderer
+/// uses a 1×1 white texture as the default mask sample for layers without a mask
+/// (or for tile coords inside a masked layer where no mask tile is allocated yet).
+final class LayerMask {
     let device: any MTLDevice
     let canvasWidth: Int
     let canvasHeight: Int
 
-    /// Optional non-destructive mask. When present, painted via the same stamp
-    /// pipeline targeted at the mask's `.r8Unorm` tiles; sampled at composite time
-    /// to attenuate the layer's alpha.
-    var mask: LayerMask?
-
     private var tiles: [TileCoord: any MTLTexture] = [:]
 
-    init(
-        id: UUID = UUID(),
-        name: String = "Layer",
-        device: any MTLDevice,
-        canvasWidth: Int,
-        canvasHeight: Int
-    ) {
-        self.id = id
-        self.name = name
+    init(device: any MTLDevice, canvasWidth: Int, canvasHeight: Int) {
         self.device = device
         self.canvasWidth = canvasWidth
         self.canvasHeight = canvasHeight
@@ -45,7 +30,7 @@ final class BitmapLayer: LayerNode {
     func ensureTile(at coord: TileCoord) -> any MTLTexture {
         if let existing = tiles[coord] { return existing }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba8Unorm,
+            pixelFormat: .r8Unorm,
             width: Canvas.tileSize,
             height: Canvas.tileSize,
             mipmapped: false
@@ -53,11 +38,13 @@ final class BitmapLayer: LayerNode {
         descriptor.usage = [.shaderRead, .renderTarget]
         descriptor.storageMode = .shared
         guard let tex = device.makeTexture(descriptor: descriptor) else {
-            fatalError("Could not allocate tile texture at \(coord)")
+            fatalError("Could not allocate mask tile at \(coord)")
         }
-        let bytesPerRow = Canvas.tileSize * 4
-        let zero = [UInt8](repeating: 0, count: bytesPerRow * Canvas.tileSize)
-        zero.withUnsafeBufferPointer { buf in
+        // Initialize to white (.r = 255 = fully visible). Mask tiles default to
+        // "everything visible" so the user sees no change until they paint.
+        let bytesPerRow = Canvas.tileSize
+        let white = [UInt8](repeating: 255, count: bytesPerRow * Canvas.tileSize)
+        white.withUnsafeBufferPointer { buf in
             tex.replace(
                 region: MTLRegionMake2D(0, 0, Canvas.tileSize, Canvas.tileSize),
                 mipmapLevel: 0,
@@ -69,12 +56,10 @@ final class BitmapLayer: LayerNode {
         return tex
     }
 
-    func allTileCoords() -> [TileCoord] { Array(tiles.keys) }
     func allTiles() -> [(coord: TileCoord, texture: any MTLTexture)] {
         tiles.map { (coord: $0.key, texture: $0.value) }
     }
 
-    /// Tile coords whose canvas regions intersect the given canvas-pixel rect, clamped to the canvas bounds.
     func tilesIntersecting(_ rect: CGRect) -> [TileCoord] {
         let ts = CGFloat(Canvas.tileSize)
         let minX = max(0, Int(floor(rect.minX / ts)))
@@ -83,7 +68,6 @@ final class BitmapLayer: LayerNode {
         let maxY = min(tilesDown - 1, Int(floor((rect.maxY - 0.0001) / ts)))
         guard minX <= maxX, minY <= maxY else { return [] }
         var coords: [TileCoord] = []
-        coords.reserveCapacity((maxX - minX + 1) * (maxY - minY + 1))
         for y in minY...maxY {
             for x in minX...maxX {
                 coords.append(TileCoord(x: x, y: y))
@@ -92,16 +76,7 @@ final class BitmapLayer: LayerNode {
         return coords
     }
 
-    func canvasRect(for coord: TileCoord) -> CGRect {
-        CGRect(
-            x: CGFloat(coord.x * Canvas.tileSize),
-            y: CGFloat(coord.y * Canvas.tileSize),
-            width: CGFloat(Canvas.tileSize),
-            height: CGFloat(Canvas.tileSize)
-        )
-    }
-
-    // MARK: - Per-tile snapshots (for undo per ARCHITECTURE.md decision 9)
+    // MARK: - Snapshots (for undo)
 
     struct TileSnapshot {
         var presentTiles: [TileCoord: Data]
@@ -135,7 +110,7 @@ final class BitmapLayer: LayerNode {
     }
 
     func readTileBytes(_ texture: any MTLTexture) -> Data {
-        let bytesPerRow = Canvas.tileSize * 4
+        let bytesPerRow = Canvas.tileSize
         let count = bytesPerRow * Canvas.tileSize
         var data = Data(count: count)
         data.withUnsafeMutableBytes { raw in
@@ -151,7 +126,7 @@ final class BitmapLayer: LayerNode {
     }
 
     private func writeTileBytes(_ texture: any MTLTexture, data: Data) {
-        let bytesPerRow = Canvas.tileSize * 4
+        let bytesPerRow = Canvas.tileSize
         data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
             texture.replace(
@@ -161,5 +136,31 @@ final class BitmapLayer: LayerNode {
                 bytesPerRow: bytesPerRow
             )
         }
+    }
+}
+
+enum LayerMaskTextures {
+    /// 1×1 white texture used as the fallback mask sample when a layer has no mask
+    /// or no tile allocated at a given canvas region.
+    static func makeDefaultMask(device: any MTLDevice) -> any MTLTexture {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .r8Unorm,
+            width: 1,
+            height: 1,
+            mipmapped: false
+        )
+        descriptor.usage = [.shaderRead]
+        descriptor.storageMode = .shared
+        guard let tex = device.makeTexture(descriptor: descriptor) else {
+            fatalError("Could not allocate default mask texture")
+        }
+        var white: UInt8 = 255
+        tex.replace(
+            region: MTLRegionMake2D(0, 0, 1, 1),
+            mipmapLevel: 0,
+            withBytes: &white,
+            bytesPerRow: 1
+        )
+        return tex
     }
 }

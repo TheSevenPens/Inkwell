@@ -20,9 +20,10 @@ private struct TileUniforms {
     var _pad: Int32 = 0
 }
 
-/// Phase 4 renderer: walks the layer tree, composites visible tiles per layer
-/// using framebuffer fetch for blend-mode math. Pass-through groups: group
-/// opacity multiplies down through children; group blend mode is not isolated.
+/// Phase 6 renderer: walks the layer tree, composites visible tiles per layer
+/// using framebuffer fetch for blend-mode math. Each tile draw also samples a
+/// mask texture at slot 1 — a 1×1 white default if the layer has no mask
+/// (or no mask tile at this coord), the actual mask tile otherwise.
 final class CanvasRenderer {
     private static let metalSource = """
     #include <metal_stdlib>
@@ -85,37 +86,37 @@ final class CanvasRenderer {
 
     fragment float4 tile_fragment(TileOut in [[stage_in]],
                                   texture2d<float> tile [[texture(0)]],
+                                  texture2d<float> mask [[texture(1)]],
                                   sampler smp [[sampler(0)]],
                                   constant TileUniforms &u [[buffer(0)]],
                                   float4 dst [[color(0)]]) {
-        // Premultiplied source, attenuated by the layer's effective opacity.
-        float4 src = tile.sample(smp, in.uv) * u.layerOpacity;
+        // Sample the layer tile (premultiplied) and the mask (single channel).
+        float4 src = tile.sample(smp, in.uv);
+        float maskValue = mask.sample(smp, in.uv).r;
+        // Mask attenuates layer alpha (multiplies both rgb and alpha because
+        // the source is premultiplied).
+        src *= maskValue;
+        // Layer's own opacity slider.
+        src *= u.layerOpacity;
 
-        // Un-premultiply for blend-mode math.
         float3 srcUn = src.a > 0.0001 ? src.rgb / src.a : float3(0);
         float3 dstUn = dst.a > 0.0001 ? dst.rgb / dst.a : float3(0);
 
         float3 blendUn;
         if (u.blendMode == 1) {
-            // Multiply
             blendUn = srcUn * dstUn;
         } else if (u.blendMode == 2) {
-            // Screen
             blendUn = 1.0 - (1.0 - srcUn) * (1.0 - dstUn);
         } else if (u.blendMode == 3) {
-            // Overlay
             blendUn = float3(
                 dstUn.r < 0.5 ? 2.0 * srcUn.r * dstUn.r : 1.0 - 2.0 * (1.0 - srcUn.r) * (1.0 - dstUn.r),
                 dstUn.g < 0.5 ? 2.0 * srcUn.g * dstUn.g : 1.0 - 2.0 * (1.0 - srcUn.g) * (1.0 - dstUn.g),
                 dstUn.b < 0.5 ? 2.0 * srcUn.b * dstUn.b : 1.0 - 2.0 * (1.0 - srcUn.b) * (1.0 - dstUn.b)
             );
         } else {
-            // Normal
             blendUn = srcUn;
         }
 
-        // Non-isolated Porter-Duff "over" with blend applied to the overlap region.
-        // Inputs and outputs are premultiplied alpha.
         float3 outRgb = src.rgb * (1.0 - dst.a)
                       + dst.rgb * (1.0 - src.a)
                       + blendUn * src.a * dst.a;
@@ -157,7 +158,6 @@ final class CanvasRenderer {
         tilePD.vertexFunction = tv
         tilePD.fragmentFunction = tf
         tilePD.colorAttachments[0].pixelFormat = viewColorPixelFormat
-        // Shader does its own blending via framebuffer fetch; disable fixed-function blend.
         tilePD.colorAttachments[0].isBlendingEnabled = false
         self.tilePipeline = try device.makeRenderPipelineState(descriptor: tilePD)
 
@@ -205,6 +205,7 @@ final class CanvasRenderer {
         // Layer tree compositing
         encoder.setRenderPipelineState(tilePipeline)
         encoder.setFragmentSamplerState(sampler, index: 0)
+        let defaultMask = canvas.defaultMaskTexture
         canvas.walkVisibleBitmapLayers { bitmap, effectiveOpacity, blendMode in
             let visibleCoords = bitmap.tilesIntersecting(visibleCanvasRect)
             for coord in visibleCoords {
@@ -219,9 +220,12 @@ final class CanvasRenderer {
                     layerOpacity: Float(effectiveOpacity),
                     blendMode: blendMode.shaderIndex
                 )
+                let maskTex: any MTLTexture =
+                    bitmap.mask?.tile(at: coord) ?? defaultMask
                 encoder.setVertexBytes(&tu, length: MemoryLayout<TileUniforms>.size, index: 0)
                 encoder.setFragmentBytes(&tu, length: MemoryLayout<TileUniforms>.size, index: 0)
                 encoder.setFragmentTexture(texture, index: 0)
+                encoder.setFragmentTexture(maskTex, index: 1)
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
             }
         }

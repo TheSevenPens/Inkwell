@@ -78,6 +78,10 @@ struct BitmapLayerData: Codable {
     var visible: Bool
     var opacity: Double
     var blendMode: String
+    /// Optional. Added in Phase 6 for layer masks; absent on Phase 5 files.
+    /// Decoder treats missing as `nil` (no mask). v1 files without this field
+    /// continue to load correctly.
+    var hasMask: Bool?
 }
 
 struct GroupLayerData: Codable {
@@ -88,6 +92,22 @@ struct GroupLayerData: Codable {
     var blendMode: String
     var expanded: Bool
     var children: [LayerNodeData]
+}
+
+extension Array where Element == LayerNodeData {
+    /// Walk the tree and yield every bitmap node as a `LayerNodeData.bitmap` case.
+    func recursiveBitmapData() -> [LayerNodeData] {
+        var out: [LayerNodeData] = []
+        for node in self {
+            switch node {
+            case .bitmap:
+                out.append(node)
+            case .group(let g):
+                out.append(contentsOf: g.children.recursiveBitmapData())
+            }
+        }
+        return out
+    }
 }
 
 // MARK: - tiles.bin (binary)
@@ -306,20 +326,50 @@ extension Canvas {
         if let tilesRaw = children[FileFormat.tilesFilename]?.regularFileContents {
             let records = try TilesFile.decode(tilesRaw)
             for record in records {
-                guard !record.isMask else { continue }  // masks land in Phase 6
-                guard record.data.count == Canvas.tileSize * Canvas.tileSize * 4 else { continue }
                 guard let layer = idMap[record.layerId] as? BitmapLayer else { continue }
-                let tex = layer.ensureTile(at: record.coord)
-                record.data.withUnsafeBytes { raw in
-                    if let base = raw.baseAddress {
-                        tex.replace(
-                            region: MTLRegionMake2D(0, 0, Canvas.tileSize, Canvas.tileSize),
-                            mipmapLevel: 0,
-                            withBytes: base,
-                            bytesPerRow: Canvas.tileSize * 4
-                        )
+                if record.isMask {
+                    // Mask tile: 1 byte per pixel, 256×256 = 65536 bytes.
+                    guard record.data.count == Canvas.tileSize * Canvas.tileSize else { continue }
+                    if layer.mask == nil {
+                        layer.mask = LayerMask(device: device, canvasWidth: width, canvasHeight: height)
+                    }
+                    let mask = layer.mask!
+                    let tex = mask.ensureTile(at: record.coord)
+                    record.data.withUnsafeBytes { raw in
+                        if let base = raw.baseAddress {
+                            tex.replace(
+                                region: MTLRegionMake2D(0, 0, Canvas.tileSize, Canvas.tileSize),
+                                mipmapLevel: 0,
+                                withBytes: base,
+                                bytesPerRow: Canvas.tileSize
+                            )
+                        }
+                    }
+                } else {
+                    // Layer pixel tile: 4 bytes per pixel.
+                    guard record.data.count == Canvas.tileSize * Canvas.tileSize * 4 else { continue }
+                    let tex = layer.ensureTile(at: record.coord)
+                    record.data.withUnsafeBytes { raw in
+                        if let base = raw.baseAddress {
+                            tex.replace(
+                                region: MTLRegionMake2D(0, 0, Canvas.tileSize, Canvas.tileSize),
+                                mipmapLevel: 0,
+                                withBytes: base,
+                                bytesPerRow: Canvas.tileSize * 4
+                            )
+                        }
                     }
                 }
+            }
+        }
+
+        // For layers with hasMask but no mask tiles in tiles.bin, still attach an empty mask.
+        for case .bitmap(let bd) in manifest.layers.recursiveBitmapData() {
+            if bd.hasMask == true,
+               let id = UUID(uuidString: bd.id),
+               let layer = idMap[id] as? BitmapLayer,
+               layer.mask == nil {
+                layer.mask = LayerMask(device: device, canvasWidth: width, canvasHeight: height)
             }
         }
 
@@ -355,7 +405,8 @@ extension Canvas {
                 name: bitmap.name,
                 visible: bitmap.isVisible,
                 opacity: Double(bitmap.opacity),
-                blendMode: bitmap.blendMode.rawValue
+                blendMode: bitmap.blendMode.rawValue,
+                hasMask: bitmap.mask != nil ? true : nil
             ))
         }
         if let group = node as? GroupLayer {
@@ -375,7 +426,8 @@ extension Canvas {
             name: node.name,
             visible: node.isVisible,
             opacity: Double(node.opacity),
-            blendMode: node.blendMode.rawValue
+            blendMode: node.blendMode.rawValue,
+            hasMask: nil
         ))
     }
 
@@ -396,6 +448,17 @@ extension Canvas {
                         isMask: false,
                         data: bytes
                     ))
+                }
+                if let mask = bitmap.mask {
+                    for entry in mask.allTiles() {
+                        let bytes = mask.readTileBytes(entry.texture)
+                        records.append(TilesFile.TileRecord(
+                            layerId: bitmap.id,
+                            coord: entry.coord,
+                            isMask: true,
+                            data: bytes
+                        ))
+                    }
                 }
             }
             if let group = node as? GroupLayer {
