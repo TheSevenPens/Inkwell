@@ -328,7 +328,9 @@ final class CanvasView: MTKView {
         if let emitter = emitter {
             let sample = sampleFor(event: event)
             lastSample = sample
+            stampRenderer?.beginBatch()
             emitter.continueTo(sample)
+            stampRenderer?.commitBatch()
         }
     }
 
@@ -414,7 +416,9 @@ final class CanvasView: MTKView {
                 return
             }
             let optionEraser = event.modifierFlags.contains(.option)
+            stampRenderer?.beginBatch()
             beginStroke(at: sampleFor(event: event), forceErase: optionEraser)
+            stampRenderer?.commitBatch()
         case .hand:
             beginPan(with: event)
         case .selectRectangle:
@@ -439,7 +443,9 @@ final class CanvasView: MTKView {
         case .brush:
             let sample = sampleFor(event: event)
             lastSample = sample
+            stampRenderer?.beginBatch()
             emitter?.continueTo(sample)
+            stampRenderer?.commitBatch()
         case .hand:
             continuePan(with: event)
         case .selectRectangle, .selectEllipse, .selectLasso:
@@ -454,7 +460,9 @@ final class CanvasView: MTKView {
         switch ToolState.shared.tool {
         case .brush:
             let sample = sampleFor(event: event)
+            stampRenderer?.beginBatch()
             emitter?.end(sample)
+            stampRenderer?.commitBatch()
             emitter = nil
             stopAirbrushTimer()
             commitUndoIfNeeded()
@@ -782,7 +790,9 @@ final class CanvasView: MTKView {
 
     private func airbrushTick() {
         guard let sample = lastSample, emitter != nil else { return }
+        stampRenderer?.beginBatch()
         dispatchSample(sample)
+        stampRenderer?.commitBatch()
     }
 
     // MARK: - Marching ants animation

@@ -117,6 +117,11 @@ final class StampRenderer {
     private let maskPipeline: any MTLRenderPipelineState
     private let sampler: any MTLSamplerState
 
+    /// Active batch buffer. While non-nil, applyStamp / applyMaskStamp encode
+    /// into this buffer instead of allocating a new one per call. Caller pairs
+    /// `beginBatch()` and `commitBatch()` around a sequence of stamp dispatches.
+    private var currentBatch: (any MTLCommandBuffer)?
+
     init(device: any MTLDevice, commandQueue: any MTLCommandQueue) throws {
         self.device = device
         self.commandQueue = commandQueue
@@ -171,6 +176,22 @@ final class StampRenderer {
         self.sampler = s
     }
 
+    /// Begin a stamp batch. While a batch is active, every applyStamp /
+    /// applyMaskStamp call encodes into a single shared MTLCommandBuffer
+    /// instead of allocating and committing one per stamp. This is critical at
+    /// high tablet rates (300+ Hz) where per-stamp commits would otherwise
+    /// flood the GPU command queue and stall presentation.
+    func beginBatch() {
+        guard currentBatch == nil else { return }
+        currentBatch = commandQueue.makeCommandBuffer()
+    }
+
+    /// Commit the active batch (if any). Safe to call when no batch is active.
+    func commitBatch() {
+        currentBatch?.commit()
+        currentBatch = nil
+    }
+
     @discardableResult
     func applyStamp(
         _ stamp: StampDispatch,
@@ -187,8 +208,9 @@ final class StampRenderer {
             height: halfBox * 2
         )
         let coords = layer.tilesIntersecting(bbox)
-        guard !coords.isEmpty,
-              let cb = commandQueue.makeCommandBuffer() else { return [] }
+        guard !coords.isEmpty else { return [] }
+        let batched = currentBatch != nil
+        guard let cb = currentBatch ?? commandQueue.makeCommandBuffer() else { return [] }
         let pipeline = (stamp.blendMode == .erase) ? erasePipeline : normalPipeline
 
         var dirty: Set<TileCoord> = []
@@ -215,7 +237,7 @@ final class StampRenderer {
             encoder.endEncoding()
             dirty.insert(coord)
         }
-        cb.commit()
+        if !batched { cb.commit() }
         return dirty
     }
 
@@ -235,8 +257,9 @@ final class StampRenderer {
             height: halfBox * 2
         )
         let coords = mask.tilesIntersecting(bbox)
-        guard !coords.isEmpty,
-              let cb = commandQueue.makeCommandBuffer() else { return [] }
+        guard !coords.isEmpty else { return [] }
+        let batched = currentBatch != nil
+        guard let cb = currentBatch ?? commandQueue.makeCommandBuffer() else { return [] }
 
         var dirty: Set<TileCoord> = []
         for coord in coords {
@@ -262,7 +285,7 @@ final class StampRenderer {
             encoder.endEncoding()
             dirty.insert(coord)
         }
-        cb.commit()
+        if !batched { cb.commit() }
         return dirty
     }
 
