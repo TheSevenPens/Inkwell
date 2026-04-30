@@ -176,6 +176,15 @@ func installMainMenu() {
         keyEquivalent: "i"
     )
     invertItem.keyEquivalentModifierMask = [.command, .shift]
+    editMenu.addItem(.separator())
+    let eraserModeItem = editMenu.addItem(
+        withTitle: "Vector Eraser Mode",
+        action: nil,
+        keyEquivalent: ""
+    )
+    let eraserModeSubmenu = NSMenu(title: "Vector Eraser Mode")
+    eraserModeItem.submenu = eraserModeSubmenu
+    VectorEraserMenuTarget.shared.installItems(into: eraserModeSubmenu)
     editItem.submenu = editMenu
     mainMenu.addItem(editItem)
 
@@ -224,6 +233,15 @@ func installMainMenu() {
         action: #selector(CanvasView.actualSize(_:)),
         keyEquivalent: "1"
     )
+    viewMenu.addItem(.separator())
+    let vectorOverlayItem = viewMenu.addItem(
+        withTitle: "Show Vector Path Overlay",
+        action: #selector(VectorOverlayMenuTarget.toggleOverlay(_:)),
+        keyEquivalent: ""
+    )
+    vectorOverlayItem.target = VectorOverlayMenuTarget.shared
+    vectorOverlayItem.state = VectorOverlayController.shared.isVisible ? .on : .off
+    VectorOverlayMenuTarget.shared.menuItem = vectorOverlayItem
     viewItem.submenu = viewMenu
     mainMenu.addItem(viewItem)
 
@@ -342,6 +360,67 @@ final class WindowMenuTarget: NSObject {
             if NSPointInRect(point, screen.frame) { return screen }
         }
         return nil
+    }
+}
+
+/// Owner of the Edit → Vector Eraser Mode submenu. Three radio-style menu
+/// items reflect `VectorEraserController.shared.mode` and update it when
+/// chosen.
+final class VectorEraserMenuTarget: NSObject {
+    static let shared = VectorEraserMenuTarget()
+    private var items: [(VectorEraserMode, NSMenuItem)] = []
+
+    override init() {
+        super.init()
+        VectorEraserController.shared.addObserver { [weak self] in
+            self?.refreshState()
+        }
+    }
+
+    func installItems(into menu: NSMenu) {
+        items.removeAll()
+        for mode in VectorEraserMode.allCases {
+            let item = menu.addItem(
+                withTitle: mode.displayName,
+                action: #selector(modeChosen(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = mode.rawValue
+            items.append((mode, item))
+        }
+        refreshState()
+    }
+
+    private func refreshState() {
+        let active = VectorEraserController.shared.mode
+        for (mode, item) in items {
+            item.state = (mode == active) ? .on : .off
+        }
+    }
+
+    @objc private func modeChosen(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let mode = VectorEraserMode(rawValue: raw) else { return }
+        VectorEraserController.shared.setMode(mode)
+    }
+}
+
+/// Owner of the View → Show Vector Path Overlay menu item. Reflects the
+/// controller's visibility state via the menu item's checkmark.
+final class VectorOverlayMenuTarget: NSObject {
+    static let shared = VectorOverlayMenuTarget()
+    weak var menuItem: NSMenuItem?
+
+    override init() {
+        super.init()
+        VectorOverlayController.shared.addObserver { [weak self] in
+            self?.menuItem?.state = VectorOverlayController.shared.isVisible ? .on : .off
+        }
+    }
+
+    @objc func toggleOverlay(_ sender: NSMenuItem) {
+        VectorOverlayController.shared.toggleVisibility()
     }
 }
 

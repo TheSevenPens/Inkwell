@@ -46,7 +46,7 @@ Sections covering installation, first-run setup, a quick-start tutorial, keyboar
 - Layer-action toolbar (**+ Layer**, **+ Vector**, **+ Group**, **Dup**, **Del**) sits directly under the Layers section title for fast access.
 - Blend modes: Normal, Multiply, Screen, Overlay (the full Photoshop set is a Phase 9 follow-up).
 
-**Deferred:** group masks, vector-layer masks, layer thumbnails in the panel, isolated group blending, per-stroke selection / move / delete on vector layers, soft-edged vector brushes (Marker/Airbrush as vector), vector eraser.
+**Deferred:** group masks, vector-layer masks, layer thumbnails in the panel, isolated group blending, per-stroke selection / move / restyle on vector layers, soft-edged vector brushes (Marker/Airbrush as vector).
 
 ## Brushes
 
@@ -55,7 +55,11 @@ Four built-in brushes share one data-driven engine. Click any in the **Brushes**
 - **G-Pen** — hard-edged round tip; pressure → size and pressure → opacity; tight spacing for inking. On vector layers, G-Pen produces a true swept-path stroke (pressure modulates radius along a single continuous ribbon; opacity is constant per stroke).
 - **Marker** — soft-edged; pressure → opacity primarily; layers translucently.
 - **Airbrush** — very soft tip with low base opacity; emits continuously while held in place at 60 Hz.
-- **Eraser** — same engine as Marker with destination-out blend so painted strokes remove pixels.
+- **Eraser** — on bitmap layers, same engine as Marker with destination-out blend so painted strokes remove pixels. On vector layers, hit-tests strokes; what gets removed is controlled by **Edit → Vector Eraser Mode**:
+  - **Whole Stroke** (default): any stroke the eraser disc touches is deleted entirely.
+  - **Touched Region**: each touched stroke is split at the raw stylus samples that fall inside the eraser disc; the runs of consecutive non-erased samples remain as new sub-strokes. Cuts snap to sample boundaries — dense polylines give clean cuts, sparse ones can leave a visible stub.
+  - **To Intersection**: from the closest sample on the touched stroke to the eraser center, walks forward and backward until a segment of the stroke crosses either a non-adjacent segment of itself or any segment of any other stroke. Removes everything between those two stops. Useful for cleaning up linework where lines cross.
+  - The mode persists across launches.
 
 Brush settings (live-edited in the right inspector):
 
@@ -107,6 +111,7 @@ Pick **Rectangle**, **Ellipse**, or **Lasso** under the **Selection** section in
 - **Tab** toggles the left sidebar (Brushes / Selection / Navigate) and the right sidebar (Brush Inspector + Layers).
 - Zoom range: ~5% to 6400%.
 - **Sampling**: the compositor uses linear filtering when zooming out (smooth downscale, no shimmer) and nearest-neighbour when zooming in (crisp pixels, no edge blur). The transition is automatic around 100%.
+- **View → Show Vector Path Overlay**: debug overlay that draws each visible vector layer's raw stylus samples as orange node markers connected by cyan polyline segments, on top of the normal composite. Useful for inspecting stroke geometry and seeing how the densifier interpolates between samples. State persists across launches.
 
 ## Window
 

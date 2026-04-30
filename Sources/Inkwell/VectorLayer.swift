@@ -177,6 +177,64 @@ final class VectorLayer: LayerNode, CompositableLayer {
         }
     }
 
+    /// Replace strokes at the given indices with new replacement strokes
+    /// (one input stroke can become 0..N outputs) and rebuild the affected
+    /// tiles. Indices in `replacements` reference `strokes` *before* this
+    /// call. Used by the region and to-intersection vector erasers.
+    func applyStrokeReplacements(
+        _ replacements: [(index: Int, with: [VectorStroke])],
+        ribbonRenderer: StrokeRibbonRenderer
+    ) {
+        guard !replacements.isEmpty else { return }
+        // Compute affected tiles: union of removed strokes' bboxes and
+        // replacement strokes' bboxes.
+        var affected: Set<TileCoord> = []
+        for r in replacements {
+            if r.index >= 0 && r.index < strokes.count {
+                for c in tilesIntersecting(strokes[r.index].bounds) { affected.insert(c) }
+            }
+            for s in r.with {
+                for c in tilesIntersecting(s.bounds) { affected.insert(c) }
+            }
+        }
+        // Build the new strokes array preserving order. Use a dictionary
+        // keyed by the *original* index; iterate the original strokes and
+        // splice in replacements where applicable.
+        let table = Dictionary(uniqueKeysWithValues: replacements.map { ($0.index, $0.with) })
+        var newStrokes: [VectorStroke] = []
+        newStrokes.reserveCapacity(strokes.count)
+        for (i, s) in strokes.enumerated() {
+            if let replacement = table[i] {
+                newStrokes.append(contentsOf: replacement)
+            } else {
+                newStrokes.append(s)
+            }
+        }
+        strokes = newStrokes
+        rebuildTiles(coords: affected, ribbonRenderer: ribbonRenderer)
+    }
+
+    /// Remove the strokes at the given indices (in any order) and rebuild
+    /// the tiles they had touched. Returns the set of tile coords that were
+    /// rebuilt. Used by the vector eraser.
+    @discardableResult
+    func removeStrokes(at indices: Set<Int>, ribbonRenderer: StrokeRibbonRenderer) -> Set<TileCoord> {
+        guard !indices.isEmpty else { return [] }
+        // Collect affected tiles before mutation.
+        var affected: Set<TileCoord> = []
+        for i in indices where i >= 0 && i < strokes.count {
+            for c in tilesIntersecting(strokes[i].bounds) {
+                affected.insert(c)
+            }
+        }
+        // Remove in descending index order so the remaining indices stay valid.
+        for i in indices.sorted(by: >) where i >= 0 && i < strokes.count {
+            strokes.remove(at: i)
+        }
+        rebuildTiles(coords: affected, ribbonRenderer: ribbonRenderer)
+        return affected
+    }
+
     /// Pop the last stroke and rebuild the tiles it had touched by clearing
     /// them and re-rendering every remaining stroke that overlaps any of them.
     @discardableResult

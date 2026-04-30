@@ -37,6 +37,11 @@ final class CanvasView: MTKView {
     private var vectorBeforeStrokes: [VectorStroke] = []
     private var vectorActiveStroke: VectorStroke?
 
+    // Vector-erasing state. Active when the user is mid-eraser-drag on a VectorLayer.
+    private var vectorEraserActive: Bool = false
+    private var vectorEraserTargetId: UUID?
+    private var vectorEraserBeforeStrokes: [VectorStroke] = []
+
     private var selectionGesture: SelectionGesture?
     private var preGestureSelectionBytes: [UInt8]?
     /// Pre-gesture selection bytes for undo registration. Differs from
@@ -192,6 +197,10 @@ final class CanvasView: MTKView {
             self?.needsDisplay = true
         }
 
+        VectorOverlayController.shared.addObserver { [weak self] in
+            self?.needsDisplay = true
+        }
+
         updateAntsTimer()
     }
 
@@ -253,6 +262,7 @@ final class CanvasView: MTKView {
             y: (bounds.height - chPt) / 2.0
         )
         needsDisplay = true
+        invalidateBrushCursor()
     }
 
     @objc func fitToWindow(_ sender: Any?) { fitCanvasToView() }
@@ -267,6 +277,21 @@ final class CanvasView: MTKView {
             y: (bounds.height - ch) / 2.0
         )
         needsDisplay = true
+        invalidateBrushCursor()
+    }
+
+    /// Force the brush cursor to regenerate. Call after any zoom-changing
+    /// mutation so the cursor's pixel size matches the new view scale.
+    /// Without this the cursor stays at its previous size until the next
+    /// `cursorUpdate` event (typically the next mouse-moved event).
+    private func invalidateBrushCursor() {
+        if ToolState.shared.tool == .brush {
+            window?.invalidateCursorRects(for: self)
+            // invalidateCursorRects defers until the next runloop pass;
+            // setting the cursor explicitly makes the change immediate even
+            // when the mouse is stationary.
+            brushCursor().set()
+        }
     }
 
     // MARK: - Coordinate mapping
@@ -385,7 +410,12 @@ final class CanvasView: MTKView {
         // If a stroke is in flight, feed this sample so we don't lose
         // intermediate tablet reports between mouseDragged events.
         let sample = sampleFor(event: event)
-        if vectorBuilder != nil {
+        if vectorEraserActive {
+            lastSample = sample
+            canvas.ribbonRenderer?.beginBatch()
+            continueVectorEraser(at: sample)
+            canvas.ribbonRenderer?.commitBatch()
+        } else if vectorBuilder != nil {
             lastSample = sample
             canvas.ribbonRenderer?.beginBatch()
             continueVectorStroke(at: sample)
@@ -484,9 +514,16 @@ final class CanvasView: MTKView {
             let forceErase = optionEraser || stylusEraserTipEngaged
             let sample = sampleFor(event: event)
             if canvas.activeVectorLayer != nil {
-                canvas.ribbonRenderer?.beginBatch()
-                beginVectorStroke(at: sample)
-                canvas.ribbonRenderer?.commitBatch()
+                let brush = BrushPalette.shared.activeBrush
+                if brush.id == "eraser" || forceErase {
+                    canvas.ribbonRenderer?.beginBatch()
+                    beginVectorEraser(at: sample)
+                    canvas.ribbonRenderer?.commitBatch()
+                } else {
+                    canvas.ribbonRenderer?.beginBatch()
+                    beginVectorStroke(at: sample)
+                    canvas.ribbonRenderer?.commitBatch()
+                }
             } else {
                 stampRenderer?.beginBatch()
                 beginStroke(at: sample, forceErase: forceErase)
@@ -516,7 +553,11 @@ final class CanvasView: MTKView {
         case .brush:
             let sample = sampleFor(event: event)
             lastSample = sample
-            if vectorBuilder != nil {
+            if vectorEraserActive {
+                canvas.ribbonRenderer?.beginBatch()
+                continueVectorEraser(at: sample)
+                canvas.ribbonRenderer?.commitBatch()
+            } else if vectorBuilder != nil {
                 canvas.ribbonRenderer?.beginBatch()
                 continueVectorStroke(at: sample)
                 canvas.ribbonRenderer?.commitBatch()
@@ -539,7 +580,11 @@ final class CanvasView: MTKView {
         switch ToolState.shared.tool {
         case .brush:
             let sample = sampleFor(event: event)
-            if vectorBuilder != nil {
+            if vectorEraserActive {
+                canvas.ribbonRenderer?.beginBatch()
+                endVectorEraser(at: sample)
+                canvas.ribbonRenderer?.commitBatch()
+            } else if vectorBuilder != nil {
                 canvas.ribbonRenderer?.beginBatch()
                 endVectorStroke(at: sample)
                 canvas.ribbonRenderer?.commitBatch()
@@ -806,6 +851,103 @@ final class CanvasView: MTKView {
         vectorTargetId = nil
         vectorBeforeStrokes = []
         vectorRawSamples = []
+        needsDisplay = true
+    }
+
+    // MARK: - Vector eraser path
+    //
+    // The vector eraser is a hit-test eraser: each input sample's eraser disc
+    // is tested against every remaining stroke; any stroke whose footprint
+    // overlaps the disc is removed in its entirety. This matches Procreate /
+    // CSP "vector eraser" semantics. Per-stroke clipping (split at intersection)
+    // is more complex and deferred.
+
+    private func beginVectorEraser(at sample: StylusSample) {
+        guard let layer = canvas.activeVectorLayer else { return }
+        guard canvas.ribbonRenderer != nil else { return }
+        vectorEraserTargetId = layer.id
+        vectorEraserBeforeStrokes = layer.strokes
+        vectorEraserActive = true
+        applyEraserSample(sample, to: layer)
+    }
+
+    private func continueVectorEraser(at sample: StylusSample) {
+        guard let layerId = vectorEraserTargetId,
+              let layer = canvas.findLayer(layerId) as? VectorLayer else { return }
+        applyEraserSample(sample, to: layer)
+    }
+
+    private func endVectorEraser(at sample: StylusSample) {
+        guard let layerId = vectorEraserTargetId,
+              let layer = canvas.findLayer(layerId) as? VectorLayer else {
+            vectorEraserActive = false
+            vectorEraserTargetId = nil
+            vectorEraserBeforeStrokes = []
+            return
+        }
+        applyEraserSample(sample, to: layer)
+
+        let after = layer.strokes
+        if vectorEraserBeforeStrokes != after {
+            document?.registerVectorStrokeUndo(
+                layerId: layerId,
+                before: vectorEraserBeforeStrokes,
+                after: after
+            )
+            document?.updateChangeCount(.changeDone)
+        }
+        vectorEraserActive = false
+        vectorEraserTargetId = nil
+        vectorEraserBeforeStrokes = []
+        needsDisplay = true
+    }
+
+    private func applyEraserSample(_ sample: StylusSample, to layer: VectorLayer) {
+        guard let ribbonRenderer = canvas.ribbonRenderer else { return }
+        let brush = BrushPalette.shared.activeBrush
+        // Pressure-modulated radius (mirrors the bitmap stamp engine for
+        // consistency); jitter and tilt skipped for V1.
+        let sizePressure = lerp(
+            1.0,
+            brush.pressureToSize.evaluate(sample.pressure),
+            brush.pressureToSizeStrength
+        )
+        let radius = max(0.5, brush.radius * sizePressure)
+        let center = sample.canvasPoint
+
+        // Find the strokes the eraser disc touches, then dispatch by mode.
+        var hits: [Int] = []
+        for (i, stroke) in layer.strokes.enumerated() {
+            if stroke.intersectsDisc(center: center, radius: radius) {
+                hits.append(i)
+            }
+        }
+        guard !hits.isEmpty else { return }
+
+        switch VectorEraserController.shared.mode {
+        case .wholeStroke:
+            layer.removeStrokes(at: Set(hits), ribbonRenderer: ribbonRenderer)
+        case .region:
+            let replacements: [(index: Int, with: [VectorStroke])] = hits.map { i in
+                (i, VectorEraserOps.splitAtTouchedSamples(layer.strokes[i], center: center, radius: radius))
+            }
+            layer.applyStrokeReplacements(replacements, ribbonRenderer: ribbonRenderer)
+        case .toIntersection:
+            // Snapshot the strokes array so each stroke's intersection check
+            // sees the same context (others as they were *before* this
+            // sample's mutations).
+            let allStrokes = layer.strokes
+            let replacements: [(index: Int, with: [VectorStroke])] = hits.map { i in
+                (i, VectorEraserOps.cutToIntersection(
+                    layer.strokes[i],
+                    strokeIndex: i,
+                    center: center,
+                    radius: radius,
+                    allStrokes: allStrokes
+                ))
+            }
+            layer.applyStrokeReplacements(replacements, ribbonRenderer: ribbonRenderer)
+        }
         needsDisplay = true
     }
 
@@ -1081,6 +1223,7 @@ final class CanvasView: MTKView {
 
     override func scrollWheel(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
+        var zoomed = false
         // hasPreciseScrollingDeltas is true for trackpads / Magic Mouse continuous
         // scrolling; false for traditional mouse wheels with discrete notches.
         if event.hasPreciseScrollingDeltas {
@@ -1088,6 +1231,7 @@ final class CanvasView: MTKView {
             if event.modifierFlags.contains(.command) {
                 let factor: CGFloat = 1.0 + event.scrollingDeltaY * 0.01
                 viewTransform.zoom(by: factor, at: p)
+                zoomed = true
             } else {
                 viewTransform.offset.x += event.scrollingDeltaX
                 viewTransform.offset.y += event.scrollingDeltaY
@@ -1096,8 +1240,10 @@ final class CanvasView: MTKView {
             // Mouse wheel: zoom by default (cursor-anchored). Each notch ≈ 10%.
             let factor: CGFloat = 1.0 + event.scrollingDeltaY * 0.10
             viewTransform.zoom(by: factor, at: p)
+            zoomed = true
         }
         needsDisplay = true
+        if zoomed { invalidateBrushCursor() }
     }
 
     override func magnify(with event: NSEvent) {
@@ -1105,6 +1251,7 @@ final class CanvasView: MTKView {
         let factor: CGFloat = 1.0 + event.magnification
         viewTransform.zoom(by: factor, at: p)
         needsDisplay = true
+        invalidateBrushCursor()
     }
 
     // MARK: - Keys

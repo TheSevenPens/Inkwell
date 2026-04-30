@@ -27,6 +27,15 @@ private struct AntsUniforms {
     var _pad: Float = 0
 }
 
+private struct VectorOverlayUniforms {
+    var transform: simd_float4x4
+    var color: SIMD4<Float>
+    var pointSize: Float
+    var _pad0: Float = 0
+    var _pad1: Float = 0
+    var _pad2: Float = 0
+}
+
 /// Phase 7 renderer: composites the layer tree as before, then draws the marching-ants
 /// overlay if a selection is active.
 final class CanvasRenderer {
@@ -165,6 +174,33 @@ final class CanvasRenderer {
         float c = p < 0.5 ? 0.0 : 1.0;
         return float4(c, c, c, edge);
     }
+
+    // ---- Vector path debug overlay (lines + node markers) ----
+
+    struct VectorOverlayUniforms {
+        float4x4 transform;
+        float4 color;
+        float pointSize;
+    };
+
+    struct VectorOverlayOut {
+        float4 position [[position]];
+        float pointSize [[point_size]];
+    };
+
+    vertex VectorOverlayOut vector_overlay_vertex(uint vid [[vertex_id]],
+                                                   const device float2 *points [[buffer(0)]],
+                                                   constant VectorOverlayUniforms &u [[buffer(1)]]) {
+        VectorOverlayOut out;
+        out.position = u.transform * float4(points[vid], 0, 1);
+        out.pointSize = u.pointSize;
+        return out;
+    }
+
+    fragment float4 vector_overlay_fragment(VectorOverlayOut in [[stage_in]],
+                                             constant VectorOverlayUniforms &u [[buffer(1)]]) {
+        return u.color;
+    }
     """
 
     private let device: any MTLDevice
@@ -172,6 +208,7 @@ final class CanvasRenderer {
     private let paperPipeline: any MTLRenderPipelineState
     private let tilePipeline: any MTLRenderPipelineState
     private let antsPipeline: any MTLRenderPipelineState
+    private let vectorOverlayPipeline: any MTLRenderPipelineState
     private let sampler: any MTLSamplerState
     /// Tile compositor sampler. Linear minification (smooth zoom-out, no
     /// shimmer) but **nearest magnification** (crisp pixels at zoom > 100% —
@@ -196,7 +233,9 @@ final class CanvasRenderer {
               let tv = library.makeFunction(name: "tile_vertex"),
               let tf = library.makeFunction(name: "tile_fragment"),
               let av = library.makeFunction(name: "ants_vertex"),
-              let af = library.makeFunction(name: "ants_fragment") else {
+              let af = library.makeFunction(name: "ants_fragment"),
+              let vov = library.makeFunction(name: "vector_overlay_vertex"),
+              let vof = library.makeFunction(name: "vector_overlay_fragment") else {
             throw RendererError.shaderFunctionMissing
         }
 
@@ -226,6 +265,21 @@ final class CanvasRenderer {
         antsPD.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
         antsPD.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
         self.antsPipeline = try device.makeRenderPipelineState(descriptor: antsPD)
+
+        // Vector debug overlay: alpha-over so the dashed lines and node markers
+        // stay legible against any background.
+        let voPD = MTLRenderPipelineDescriptor()
+        voPD.vertexFunction = vov
+        voPD.fragmentFunction = vof
+        voPD.colorAttachments[0].pixelFormat = viewColorPixelFormat
+        voPD.colorAttachments[0].isBlendingEnabled = true
+        voPD.colorAttachments[0].rgbBlendOperation = .add
+        voPD.colorAttachments[0].alphaBlendOperation = .add
+        voPD.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        voPD.colorAttachments[0].sourceAlphaBlendFactor = .one
+        voPD.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        voPD.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        self.vectorOverlayPipeline = try device.makeRenderPipelineState(descriptor: voPD)
 
         let sd = MTLSamplerDescriptor()
         sd.minFilter = .linear
@@ -320,9 +374,70 @@ final class CanvasRenderer {
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         }
 
+        // Vector path debug overlay (View → Show Vector Path Overlay).
+        if VectorOverlayController.shared.isVisible {
+            drawVectorPathOverlay(encoder: encoder, canvas: canvas, viewTransform: viewTransform)
+        }
+
         encoder.endEncoding()
         cb.present(drawable)
         cb.commit()
+    }
+
+    private func drawVectorPathOverlay(
+        encoder: any MTLRenderCommandEncoder,
+        canvas: Canvas,
+        viewTransform: simd_float4x4
+    ) {
+        let layers = canvas.visibleVectorLayers()
+        guard !layers.isEmpty else { return }
+        var lineVerts: [SIMD2<Float>] = []
+        var pointVerts: [SIMD2<Float>] = []
+        for layer in layers {
+            for stroke in layer.strokes {
+                let samples = stroke.samples
+                guard !samples.isEmpty else { continue }
+                for (i, s) in samples.enumerated() {
+                    pointVerts.append(SIMD2<Float>(Float(s.x), Float(s.y)))
+                    if i < samples.count - 1 {
+                        let n = samples[i + 1]
+                        lineVerts.append(SIMD2<Float>(Float(s.x), Float(s.y)))
+                        lineVerts.append(SIMD2<Float>(Float(n.x), Float(n.y)))
+                    }
+                }
+            }
+        }
+        guard !pointVerts.isEmpty else { return }
+
+        encoder.setRenderPipelineState(vectorOverlayPipeline)
+
+        // Lines first (raw polyline). Cyan, ~1 px Metal default line width.
+        if !lineVerts.isEmpty {
+            var u = VectorOverlayUniforms(
+                transform: viewTransform,
+                color: SIMD4<Float>(0.20, 0.85, 1.0, 0.85),
+                pointSize: 0
+            )
+            let lineBytes = lineVerts.count * MemoryLayout<SIMD2<Float>>.size
+            guard let lineBuf = device.makeBuffer(bytes: lineVerts, length: lineBytes, options: []) else { return }
+            encoder.setVertexBuffer(lineBuf, offset: 0, index: 0)
+            encoder.setVertexBytes(&u, length: MemoryLayout<VectorOverlayUniforms>.size, index: 1)
+            encoder.setFragmentBytes(&u, length: MemoryLayout<VectorOverlayUniforms>.size, index: 1)
+            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: lineVerts.count)
+        }
+
+        // Then nodes on top. Orange, 6-px squares (Metal point sprites).
+        var u = VectorOverlayUniforms(
+            transform: viewTransform,
+            color: SIMD4<Float>(1.0, 0.55, 0.10, 1.0),
+            pointSize: 6
+        )
+        let pointBytes = pointVerts.count * MemoryLayout<SIMD2<Float>>.size
+        guard let pointBuf = device.makeBuffer(bytes: pointVerts, length: pointBytes, options: []) else { return }
+        encoder.setVertexBuffer(pointBuf, offset: 0, index: 0)
+        encoder.setVertexBytes(&u, length: MemoryLayout<VectorOverlayUniforms>.size, index: 1)
+        encoder.setFragmentBytes(&u, length: MemoryLayout<VectorOverlayUniforms>.size, index: 1)
+        encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: pointVerts.count)
     }
 
     enum RendererError: Error, LocalizedError {

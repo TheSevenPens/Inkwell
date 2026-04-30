@@ -438,6 +438,27 @@ final class Canvas {
         return names
     }
 
+    /// Enumerate visible vector layers anywhere in the tree. Used by the
+    /// vector-path debug overlay; order doesn't matter since the overlay
+    /// draws on top of the composite. Hidden layers (and hidden enclosing
+    /// groups) are skipped.
+    func visibleVectorLayers() -> [VectorLayer] {
+        var result: [VectorLayer] = []
+        collectVisibleVectorLayers(in: rootLayers, into: &result)
+        return result
+    }
+
+    private func collectVisibleVectorLayers(in nodes: [LayerNode], into out: inout [VectorLayer]) {
+        for n in nodes {
+            guard n.isVisible else { continue }
+            if let v = n as? VectorLayer {
+                out.append(v)
+            } else if let g = n as? GroupLayer {
+                collectVisibleVectorLayers(in: g.children, into: &out)
+            }
+        }
+    }
+
     /// Walk leaf compositable layers (bitmap and vector) in compositing order
     /// (back-to-front), with their effective opacity multiplied by enclosing
     /// groups (pass-through model).

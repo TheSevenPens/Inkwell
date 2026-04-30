@@ -1,6 +1,19 @@
 import Foundation
 import CoreGraphics
 
+private func distanceFromPointToSegment(p: CGPoint, a: CGPoint, b: CGPoint) -> CGFloat {
+    let abx = b.x - a.x
+    let aby = b.y - a.y
+    let lenSq = abx * abx + aby * aby
+    if lenSq < 1e-9 {
+        return hypot(p.x - a.x, p.y - a.y)
+    }
+    let t = max(0, min(1, ((p.x - a.x) * abx + (p.y - a.y) * aby) / lenSq))
+    let cx = a.x + t * abx
+    let cy = a.y + t * aby
+    return hypot(p.x - cx, p.y - cy)
+}
+
 /// A single stylus sample stored on a vector stroke. Position is in canvas
 /// pixels. Pressure is normalized 0…1.
 struct VectorStrokeSample: Codable, Equatable {
@@ -62,6 +75,42 @@ struct VectorStroke: Codable, Equatable {
     func radius(forPressure p: CGFloat) -> CGFloat {
         let pp = max(0, min(1, p))
         return minRadius + (maxRadius - minRadius) * pp
+    }
+
+    /// Returns true iff the disc at `center` with `radius` overlaps the
+    /// stroke's rendered footprint. Used by the vector eraser for hit-testing
+    /// during eraser drags.
+    ///
+    /// Approximation: the rendered ribbon is the union of disks at each
+    /// densified centerline point. For hit-testing we don't densify — we
+    /// check the eraser disc against each raw segment using a "minimum
+    /// distance from point to segment" test, padded by the segment's
+    /// per-endpoint radius. This is conservative (may report a hit slightly
+    /// outside the rendered ribbon when radii vary sharply along a segment)
+    /// but never reports a miss when there's a real overlap.
+    func intersectsDisc(center: CGPoint, radius: CGFloat) -> Bool {
+        let pad = radius + maxRadius + 1
+        let inflated = bounds.insetBy(dx: -pad, dy: -pad)
+        if !inflated.contains(center) { return false }
+        if samples.isEmpty { return false }
+        if samples.count == 1 {
+            let s = samples[0]
+            let strokeR = self.radius(forPressure: s.pressure)
+            return hypot(center.x - s.x, center.y - s.y) <= radius + strokeR
+        }
+        for i in 0..<(samples.count - 1) {
+            let p1 = samples[i]
+            let p2 = samples[i + 1]
+            let r1 = self.radius(forPressure: p1.pressure)
+            let r2 = self.radius(forPressure: p2.pressure)
+            let segDist = distanceFromPointToSegment(
+                p: center,
+                a: CGPoint(x: p1.x, y: p1.y),
+                b: CGPoint(x: p2.x, y: p2.y)
+            )
+            if segDist <= radius + max(r1, r2) { return true }
+        }
+        return false
     }
 
     private static func computeBounds(samples: [VectorStrokeSample], maxRadius: CGFloat) -> CGRect {
