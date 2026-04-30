@@ -20,6 +20,18 @@ The format reserves the `history.bin` chunk in the `.inkwell` bundle (per `ARCHI
 
 Once shipped, this also unlocks the timelapse playback UI (see "Timelapse playback UI" below).
 
+### Phase 5 Pass 2 — structural-op undo (layer tree and attribute edits)
+
+Per `design/UNDO.md`, the following mutations are **not** on the undo stack today:
+
+- Layer create / delete / reorder / rename / regroup.
+- Layer mask add / remove.
+- Opacity slider, blend mode popup, visibility toggle.
+- Background layer color pick.
+- Brush settings changes (size, hardness, opacity).
+
+Adding structural-op undo requires defining a `LayerTreeSnapshot` type (or a set of targeted structural-op records), hooking the Inspector panel and layer-panel toolbar actions into a new `Document.registerStructuralUndo(...)` method, and assigning action names for each op ("Add Layer", "Delete Layer", "Move Layer", "Set Opacity", etc.). The existing inverse-snapshot pattern in `Document.swift` is the right template. See issue [#1](https://github.com/TheSevenPens/Inkwell/issues/1).
+
 ### Phase 7 Pass 2 — selection completeness
 
 - Polygonal lasso, magic wand (color similarity with tolerance), color range (color match across the canvas).
@@ -27,11 +39,14 @@ Once shipped, this also unlocks the timelapse playback UI (see "Timelapse playba
 - Floating-selection transforms (move / scale / rotate the selected pixels as a transient pseudo-layer with commit / cancel).
 - Per-selection feather slider (Gaussian blur applied to the mask).
 - Vector path retention for shape selections (rectangle / ellipse / polygonal lasso) — keeps marching ants crisp under transform and enables lossless transforms before commit.
+- Stabilized lasso input: route freehand-lasso stroke samples through the stroke processor's smoothing pipeline before committing to the selection mask (the same stabilizer that brush strokes use). See issue [#11](https://github.com/TheSevenPens/Inkwell/issues/11).
 - ~~Selection-state undo: selection edits (rect / ellipse / lasso, Select All, Invert, Deselect) aren't yet on the undo stack.~~ **Shipped:** all selection-mutating ops are now on the undo stack via `Document.registerSelectionUndo`.
+- ~~Invert selection (Cmd-Shift-I).~~ **Shipped:** wired as a menu action with `registerSelectionUndo`; action name `"Invert Selection"`. Issues [#19](https://github.com/TheSevenPens/Inkwell/issues/19) and [#21](https://github.com/TheSevenPens/Inkwell/issues/21) can be closed.
+- ~~Add / remove / intersect selection arithmetic (Shift / Option / Shift+Option modifiers).~~ **Shipped:** implemented in `CanvasView`; described in `arch/SELECTIONS.md` decision 12. Issue [#10](https://github.com/TheSevenPens/Inkwell/issues/10) can be closed.
 
 ### Phase 9 Pass 2 — layer-aware PSD round-trip
 
-The flat-composite PSD export from Pass 1 covers basic interop but loses the layer hierarchy. Pass 2 is a proper PSD codec:
+The flat-composite PSD export from Pass 1 covers basic interop but loses the layer hierarchy. Pass 2 is a proper PSD codec (see issue [#16](https://github.com/TheSevenPens/Inkwell/issues/16)):
 
 - Write the layer-and-mask-info section with one record per Inkwell bitmap layer: name, opacity, blend mode, channel data.
 - Map our v1 blend modes (Normal / Multiply / Screen / Overlay) to PSD blend-mode keys; expand to a fuller Photoshop set in the same pass.
@@ -67,6 +82,7 @@ Pass 1 ships rotate / flip; Pass 2 fills in:
 - Custom in-app color picker UI (HSB / RGB sliders, color wheel, hex input integrated into a single panel). The system `NSColorPanel` reached via the color well is fine for now; a richer in-app picker is a polish win.
 - Preferences panel (autosave interval, history budget, gamut mapping policy, default new-doc dimensions).
 - Cursor preview improvements — brush silhouette beyond the current circle outline; tilt indicator; rotation indicator. Most useful when non-circular tip previews ship.
+- Named brush variants / presets: a way to save and name multiple configurations of the same brush (e.g., "Fine G-Pen", "Bold G-Pen") as distinct selectable entries in the brush palette. Architecturally natural given that brushes are data-driven JSON (`ARCHITECTURE.md` decision 11); the work is UI and persistence. See issue [#18](https://github.com/TheSevenPens/Inkwell/issues/18).
 
 ---
 
@@ -94,7 +110,8 @@ A `VectorLayer` type now exists alongside `BitmapLayer`. Strokes are stored as r
   - **Performance is O(strokes × segments²)** per eraser sample for cross-stroke detection, plus self-intersection on the touched stroke. Bounded for typical line-art (dozens of strokes, ~50 segments each); a heavy layer with hundreds of long strokes will start to stall during the eraser drag. V2: build a per-layer spatial index (R-tree on segment bboxes) at the start of each eraser drag and tear it down on end.
   - **Whole Stroke is all-or-nothing**: a barely-grazing eraser disc still deletes the whole stroke. Working as designed, but worth surfacing.
   - **One undo entry per drag**: each eraser drag collapses to a single Cmd+Z. The user can't roll back partway through a drag. Matches the bitmap-stroke undo pattern.
-- **Per-stroke selection / move / scale / restyle.** The "vector" benefit users will actually want.
+- **Per-stroke selection / move / scale / restyle.** The "vector" benefit users will actually want. See issues [#2](https://github.com/TheSevenPens/Inkwell/issues/2) and [#3](https://github.com/TheSevenPens/Inkwell/issues/3) (node editing for vector strokes) — issues #2 and #3 are duplicates; one can be closed.
+- **Improve vector line erasing at intersections** (issue [#4](https://github.com/TheSevenPens/Inkwell/issues/4)): see the "Touched Region" and "To Intersection" caveats above for the specific sub-pixel and spatial-index work still needed.
 - **True zoom-aware re-rasterization.** Today the cached tiles are at 1:1 canvas resolution; at high zoom we use nearest-neighbour magnification (crisp but blocky) rather than re-rasterizing the strokes at the current view scale. Re-rasterizing would give the genuine "infinite vector zoom" feel.
 - **Joint AA halo overdarkening.** Adjacent capsule segments share AA halo regions where over-blend stacks slightly, producing ~1px-wide darker pixels at curve joints. Imperceptible at G-Pen's default opacity=1.0; will become visible if we expose opacity < 1 on vectors. Fix is a polyline-buffer per-tile fragment shader (compute min distance across all segments in one pass).
 - **Vector-layer masks.** Today `VectorLayer.mask` is hard-coded to nil; the protocol can carry one but the UI / file format / undo paths haven't been wired.
@@ -105,9 +122,22 @@ A `VectorLayer` type now exists alongside `BitmapLayer`. Strokes are stored as r
 
 ---
 
+### Layer bounds independent of canvas bounds
+
+Today every layer's tile grid is bounded to the canvas dimensions — moving a layer partially outside the canvas crops the pixels that fall outside. Users expect the opposite: a layer moved beyond the canvas edge should retain its full pixel content and simply be clipped at the canvas edge during compositing (the Photoshop and CSP model). See issue [#15](https://github.com/TheSevenPens/Inkwell/issues/15).
+
+**What changes.** The `BitmapLayer` tile grid needs an origin offset tracked separately from the canvas (so tile coords are relative to the layer's own origin, not the canvas origin). The compositor clips layer content to the canvas viewport. The Move Layer tool sets the offset rather than translating the pixels destructively. Undo for move becomes a simple offset snapshot rather than a full pixel snapshot.
+
+**Open questions.**
+- Define the "infinite layer" footprint limit (some cap on tile count per layer to bound memory).
+- How free-transform (rotate / scale within the layer) interacts with an offset layer origin.
+- PSD round-trip: PSD `bounding box` fields per layer already model this; exporting them correctly falls under Phase 9 Pass 2.
+
+---
+
 ### Distortion brushes (blur, liquify, smudge)
 
-Brushes that read the canvas mid-stroke and produce a result that depends on what is already there: blur, smudge, liquify, push, pull.
+Brushes that read the canvas mid-stroke and produce a result that depends on what is already there: blur, smudge, liquify, push, pull. See issues [#20](https://github.com/TheSevenPens/Inkwell/issues/20) and [#24](https://github.com/TheSevenPens/Inkwell/issues/24) (blur filter is a subset of this work).
 
 **Why deferred from v1.** These do not fit the pure stamp-based engine cleanly — they need to sample existing tile content during stroke processing, which changes the GPU dispatch shape and adds a tile-read dependency we do not have today. They are also brush-design-heavy: each distortion brush has its own tunables and feel.
 
@@ -204,6 +234,42 @@ Decision 9 chose linear redo for v1 (the standard for the category). A future "b
 
 ---
 
+### Flood fill (paint bucket)
+
+A paint-bucket tool that fills a contiguous region of similar color with the foreground color. Constrained by the active selection (if any). See issue [#8](https://github.com/TheSevenPens/Inkwell/issues/8).
+
+**Architectural readiness.** Implemented as a GPU compute kernel that flood-fills a tile region using the selection mask as a write constraint — the same constraint mechanism used by brush stamps. The tile cache and dirty-tracking APIs already support writing whole tiles atomically.
+
+**Open questions.** Tolerance (how similar is "similar"?), anti-aliased vs hard edge fill, whether fill can span across layers or is restricted to the active layer.
+
+---
+
+### Layer lock
+
+A `isLocked` flag on each layer (and layer group) that prevents the layer's pixels from being modified by brush input, fills, or transforms. A locked layer's visibility and attributes (opacity, blend mode, name) remain adjustable. See issues [#13](https://github.com/TheSevenPens/Inkwell/issues/13) and [#14](https://github.com/TheSevenPens/Inkwell/issues/14).
+
+**Architectural readiness.** The flag lives on `LayerNode`. The brush dispatch path in `CanvasView` and the fill / transform ops in `Document` each add a single guard check before writing. The layer-panel UI shows a lock icon toggle. Straightforward to add.
+
+---
+
+### Per-stroke anti-aliasing control
+
+A per-brush setting that controls whether stroke edges are anti-aliased. The stamp rasterizer already writes sub-pixel alpha for soft-edge stamps; hard-edge (G-Pen) strokes currently get implicit AA from the SDF capsule shader. This feature would add a toggle (or a hardness curve endpoint) to force binary coverage for pixel-art and hard-edge illustration styles. See issue [#7](https://github.com/TheSevenPens/Inkwell/issues/7).
+
+**Architectural readiness.** The brush settings format (`ARCHITECTURE.md` decision 11) is JSON and versioned. Adding a boolean `antialiasingEnabled` field (default: true) is a backward-compatible change; old brush files default to AA-on.
+
+---
+
+### CSP (Clip Studio Paint) file format import/export
+
+Read and write `.csp` files. Unlike PSD (which has extensive third-party documentation), CSP's binary format is partially reverse-engineered with no official spec. See issue [#17](https://github.com/TheSevenPens/Inkwell/issues/17).
+
+**Why deferred.** More speculative than ABR import (which is already tracked) because CSP is a full document format, not just a brush format. The risk is incomplete coverage: unsupported layer types (vector, 3D, animation frames) would be silently dropped or incorrectly rendered.
+
+**Open questions.** Scope of the initial pass (flat-composite only? basic bitmap layers?), fidelity table similar to `PSD_FIDELITY.md`, and whether export is in scope alongside import.
+
+---
+
 ## Operational and infrastructure futures
 
 ### C++ migration of hot paths
@@ -279,6 +345,14 @@ Several v1 behaviors rely on modifier keys that first-time users will not discov
 
 ---
 
+### Marching ants visibility
+
+The animated selection outline ("marching ants") is hard to see on certain canvas colors, particularly dark or very saturated fills. See issue [#12](https://github.com/TheSevenPens/Inkwell/issues/12).
+
+**Options.** A high-contrast rendering mode (e.g., always white/black alternating dashes with a drop shadow, independent of canvas content), a user-configurable color pair, or a dynamic color that inverts against the canvas pixels under the outline. The marching-ants Metal overlay shader is already its own small pipeline (`arch/SELECTIONS.md` decision 12), so changes are localized.
+
+---
+
 ### Eraser-tip behavior surfacing — shipped
 
 Decision 10's eraser-end-of-stylus behavior is now both **implemented** (it wasn't actually wired up before) and **surfaced**:
@@ -320,13 +394,15 @@ Both `StampRenderer` (bitmap) and `StrokeRibbonRenderer` (vector) now expose `be
 
 These are mentioned for completeness; none are committed.
 
-- **Text layers.** Editable text as a layer type, with font / size / color / paragraph controls, exported as rasterized in PSD. Significant new surface (font handling, text rendering, layout) and a different layer type from bitmap or vector strokes.
-- **Adjustment layers.** Non-destructive color/tone adjustments (curves, levels, hue/saturation, etc.) applied as layers. Architecturally similar to filters but in the layer stack rather than at the brush.
+- **Text layers.** Editable text as a layer type, with font / size / color / paragraph controls, exported as rasterized in PSD. Significant new surface (font handling, text rendering, layout) and a different layer type from bitmap or vector strokes. See issue [#25](https://github.com/TheSevenPens/Inkwell/issues/25).
+- **Adjustment layers.** Non-destructive color/tone adjustments (curves, levels, hue/saturation, etc.) applied as layers. Architecturally similar to filters but in the layer stack rather than at the brush. See issue [#23](https://github.com/TheSevenPens/Inkwell/issues/23).
 - **Animation / multi-frame documents.** A timeline of frames with onion-skinning. A different document model from single-frame v1 and a major UI surface.
 - **Plugin system.** Third-party brushes, filters, and tools loaded at runtime. Requires a stable API contract, sandboxing decisions, and a distribution channel.
 - **Procedural brushes.** Brushes whose stamp shape is computed in a shader rather than from a tip texture. Powerful for some natural-media and effect brushes; a layered addition to the existing brush engine.
-- **Reference-image and pose-mannequin tools.** A reference panel with pinned images, optional 3D pose models — common in illustration workflows.
-- **Stroke stabilization tuning.** Beyond the smoothing in the stroke processor, user-adjustable stabilization (correction strength, lag) for shaky-hand workflows.
+- **Reference-image and pose-mannequin tools.** A reference panel with pinned images, optional 3D pose models — common in illustration workflows. See issue [#22](https://github.com/TheSevenPens/Inkwell/issues/22).
+- **Stroke stabilization tuning.** Beyond the smoothing in the stroke processor, user-adjustable stabilization for shaky-hand workflows, split into two distinct controls:
+  - **Position stabilization** (issue [#5](https://github.com/TheSevenPens/Inkwell/issues/5)): correction strength and lag (trailing-average or moving-endpoint) that smooths the spatial path of the stroke before committing samples.
+  - **Pressure stabilization** (issue [#6](https://github.com/TheSevenPens/Inkwell/issues/6)): a smoothing window over the raw stylus pressure stream to remove jitter from inconsistent grip pressure, distinct from the pressure *curve* shape (which is already tracked as a separate revisit in this document).
 
 ---
 
