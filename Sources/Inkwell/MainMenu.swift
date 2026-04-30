@@ -130,6 +130,23 @@ func installMainMenu() {
         keyEquivalent: "z"
     )
     redoItem.keyEquivalentModifierMask = [.command, .shift]
+    editMenu.addItem(.separator())
+    editMenu.addItem(
+        withTitle: "Select All",
+        action: #selector(CanvasView.selectAll(_:)),
+        keyEquivalent: "a"
+    )
+    editMenu.addItem(
+        withTitle: "Deselect",
+        action: #selector(CanvasView.deselect(_:)),
+        keyEquivalent: "d"
+    )
+    let invertItem = editMenu.addItem(
+        withTitle: "Invert Selection",
+        action: #selector(CanvasView.invertSelection(_:)),
+        keyEquivalent: "i"
+    )
+    invertItem.keyEquivalentModifierMask = [.command, .shift]
     editItem.submenu = editMenu
     mainMenu.addItem(editItem)
 

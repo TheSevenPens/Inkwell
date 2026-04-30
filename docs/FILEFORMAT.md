@@ -14,6 +14,7 @@ An `.inkwell` document is a macOS document bundle — a directory presented as a
 MyDocument.inkwell/
 ├── manifest.json     # required
 ├── tiles.bin         # optional; absent if every layer is empty
+├── selection.bin     # optional; absent if no document-level selection is active (Phase 7+)
 ├── thumbnail.png     # required
 ├── history.bin       # reserved for a future version (not written by v1)
 └── assets/           # reserved for embedded brushes, ICC profiles, etc. (not written by v1)
@@ -151,6 +152,32 @@ Mask tile data:
 - Default for any tile not present in the file: 255 (fully visible). Painting a mask tile that hides nothing is a no-op; no record is written.
 
 Phase 5 readers (which lacked mask support) silently dropped these records. Phase 6 readers consume them; if a layer's manifest entry has `hasMask: true` but no mask tiles are present, the reader still attaches an empty `LayerMask`.
+
+---
+
+## `selection.bin` (optional, Phase 7+)
+
+Document-level selection mask. Absent when no selection is active.
+
+### Header (16 bytes)
+
+| Offset | Size | Field        | Notes                       |
+|--------|------|--------------|-----------------------------|
+| 0      | 8    | magic        | ASCII bytes `INKSELC ` (note trailing space) |
+| 8      | 4    | version      | uint32. Currently `1`.      |
+| 12     | 4    | reserved     | uint32. Must be 0 in v1.    |
+
+### Body
+
+| Offset | Size  | Field   | Notes                                       |
+|--------|-------|---------|---------------------------------------------|
+| 16     | 4     | width   | uint32. Must equal manifest `document.width`.  |
+| 20     | 4     | height  | uint32. Must equal manifest `document.height`. |
+| 24     | W·H   | pixels  | Raw `.r8Unorm` bytes, top-down. 255 = fully selected, 0 = not selected. |
+
+Phase 5 / Phase 6 readers ignore this file (treat as no selection). The selection
+must be all-zero to omit the file; non-zero ⇒ selection is active and the file
+is written.
 
 ---
 

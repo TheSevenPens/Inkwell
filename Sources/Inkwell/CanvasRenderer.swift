@@ -20,10 +20,15 @@ private struct TileUniforms {
     var _pad: Int32 = 0
 }
 
-/// Phase 6 renderer: walks the layer tree, composites visible tiles per layer
-/// using framebuffer fetch for blend-mode math. Each tile draw also samples a
-/// mask texture at slot 1 — a 1×1 white default if the layer has no mask
-/// (or no mask tile at this coord), the actual mask tile otherwise.
+private struct AntsUniforms {
+    var transform: simd_float4x4
+    var canvasSize: SIMD2<Float>
+    var time: Float
+    var _pad: Float = 0
+}
+
+/// Phase 7 renderer: composites the layer tree as before, then draws the marching-ants
+/// overlay if a selection is active.
 final class CanvasRenderer {
     private static let metalSource = """
     #include <metal_stdlib>
@@ -90,13 +95,9 @@ final class CanvasRenderer {
                                   sampler smp [[sampler(0)]],
                                   constant TileUniforms &u [[buffer(0)]],
                                   float4 dst [[color(0)]]) {
-        // Sample the layer tile (premultiplied) and the mask (single channel).
         float4 src = tile.sample(smp, in.uv);
         float maskValue = mask.sample(smp, in.uv).r;
-        // Mask attenuates layer alpha (multiplies both rgb and alpha because
-        // the source is premultiplied).
         src *= maskValue;
-        // Layer's own opacity slider.
         src *= u.layerOpacity;
 
         float3 srcUn = src.a > 0.0001 ? src.rgb / src.a : float3(0);
@@ -123,14 +124,58 @@ final class CanvasRenderer {
         float outA = src.a + dst.a * (1.0 - src.a);
         return float4(outRgb, outA);
     }
+
+    struct AntsUniforms {
+        float4x4 transform;
+        float2 canvasSize;
+        float time;
+    };
+
+    struct AntsOut {
+        float4 position [[position]];
+        float2 selectionUV;
+    };
+
+    vertex AntsOut ants_vertex(uint vid [[vertex_id]],
+                               constant AntsUniforms &u [[buffer(0)]]) {
+        float2 corner = kCanvasQuadCorners[vid];
+        float2 canvasPos = corner * u.canvasSize;
+        AntsOut out;
+        out.position = u.transform * float4(canvasPos, 0, 1);
+        out.selectionUV = float2(corner.x, 1.0 - corner.y);
+        return out;
+    }
+
+    fragment float4 ants_fragment(AntsOut in [[stage_in]],
+                                  constant AntsUniforms &u [[buffer(0)]],
+                                  texture2d<float> selection [[texture(0)]],
+                                  sampler smp [[sampler(0)]]) {
+        float s = selection.sample(smp, in.selectionUV).r;
+        // Edge thickness scales with the selection's screen-space gradient.
+        float w = fwidth(s);
+        if (w <= 0.0) {
+            discard_fragment();
+        }
+        float edge = 1.0 - smoothstep(0.0, w * 1.5, abs(s - 0.5));
+        if (edge < 0.05) {
+            discard_fragment();
+        }
+        // Dashed pattern in screen space, scrolling over time.
+        float p = fract((in.position.x + in.position.y - u.time * 60.0) / 8.0);
+        float c = p < 0.5 ? 0.0 : 1.0;
+        return float4(c, c, c, edge);
+    }
     """
 
     private let device: any MTLDevice
     private let commandQueue: any MTLCommandQueue
     private let paperPipeline: any MTLRenderPipelineState
     private let tilePipeline: any MTLRenderPipelineState
+    private let antsPipeline: any MTLRenderPipelineState
     private let sampler: any MTLSamplerState
     private weak var canvas: Canvas?
+
+    private let startTime = Date()
 
     init(
         device: any MTLDevice,
@@ -144,7 +189,9 @@ final class CanvasRenderer {
         guard let pv = library.makeFunction(name: "paper_vertex"),
               let pf = library.makeFunction(name: "paper_fragment"),
               let tv = library.makeFunction(name: "tile_vertex"),
-              let tf = library.makeFunction(name: "tile_fragment") else {
+              let tf = library.makeFunction(name: "tile_fragment"),
+              let av = library.makeFunction(name: "ants_vertex"),
+              let af = library.makeFunction(name: "ants_fragment") else {
             throw RendererError.shaderFunctionMissing
         }
 
@@ -160,6 +207,20 @@ final class CanvasRenderer {
         tilePD.colorAttachments[0].pixelFormat = viewColorPixelFormat
         tilePD.colorAttachments[0].isBlendingEnabled = false
         self.tilePipeline = try device.makeRenderPipelineState(descriptor: tilePD)
+
+        // Marching ants: standard alpha-over.
+        let antsPD = MTLRenderPipelineDescriptor()
+        antsPD.vertexFunction = av
+        antsPD.fragmentFunction = af
+        antsPD.colorAttachments[0].pixelFormat = viewColorPixelFormat
+        antsPD.colorAttachments[0].isBlendingEnabled = true
+        antsPD.colorAttachments[0].rgbBlendOperation = .add
+        antsPD.colorAttachments[0].alphaBlendOperation = .add
+        antsPD.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        antsPD.colorAttachments[0].sourceAlphaBlendFactor = .one
+        antsPD.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        antsPD.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        self.antsPipeline = try device.makeRenderPipelineState(descriptor: antsPD)
 
         let sd = MTLSamplerDescriptor()
         sd.minFilter = .linear
@@ -220,14 +281,28 @@ final class CanvasRenderer {
                     layerOpacity: Float(effectiveOpacity),
                     blendMode: blendMode.shaderIndex
                 )
-                let maskTex: any MTLTexture =
-                    bitmap.mask?.tile(at: coord) ?? defaultMask
+                let maskTex: any MTLTexture = bitmap.mask?.tile(at: coord) ?? defaultMask
                 encoder.setVertexBytes(&tu, length: MemoryLayout<TileUniforms>.size, index: 0)
                 encoder.setFragmentBytes(&tu, length: MemoryLayout<TileUniforms>.size, index: 0)
                 encoder.setFragmentTexture(texture, index: 0)
                 encoder.setFragmentTexture(maskTex, index: 1)
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
             }
+        }
+
+        // Marching ants overlay (only when a selection is active).
+        if let selection = canvas.selection {
+            var au = AntsUniforms(
+                transform: viewTransform,
+                canvasSize: SIMD2<Float>(Float(canvas.width), Float(canvas.height)),
+                time: Float(Date().timeIntervalSince(startTime))
+            )
+            encoder.setRenderPipelineState(antsPipeline)
+            encoder.setVertexBytes(&au, length: MemoryLayout<AntsUniforms>.size, index: 0)
+            encoder.setFragmentBytes(&au, length: MemoryLayout<AntsUniforms>.size, index: 0)
+            encoder.setFragmentTexture(selection.texture, index: 0)
+            encoder.setFragmentSamplerState(sampler, index: 0)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         }
 
         encoder.endEncoding()

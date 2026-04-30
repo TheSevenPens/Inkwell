@@ -11,6 +11,7 @@ enum FileFormat {
 
     static let manifestFilename = "manifest.json"
     static let tilesFilename = "tiles.bin"
+    static let selectionFilename = "selection.bin"  // optional; absent if no active selection
     static let thumbnailFilename = "thumbnail.png"
     static let assetsDirectoryName = "assets"
     static let historyFilename = "history.bin"  // reserved; not yet written by v1 (see commit / FILEFORMAT.md)
@@ -183,6 +184,50 @@ enum TilesFile {
     }
 }
 
+// MARK: - selection.bin (binary)
+
+enum SelectionFile {
+    static let magic: [UInt8] = Array("INKSELC ".utf8)  // 8 bytes
+    static let version: UInt32 = 1
+    static let headerSize: Int = 16  // 8 magic + 4 version + 4 reserved
+
+    static func encode(width: Int, height: Int, bytes: [UInt8]) -> Data {
+        precondition(bytes.count == width * height)
+        var out = Data()
+        out.reserveCapacity(headerSize + 8 + bytes.count)
+        out.append(contentsOf: magic)
+        out.append(uint32LE(version))
+        out.append(uint32LE(0))  // reserved
+        out.append(uint32LE(UInt32(width)))
+        out.append(uint32LE(UInt32(height)))
+        out.append(contentsOf: bytes)
+        return out
+    }
+
+    /// Returns (width, height, bytes). Throws on malformed or unknown-version data.
+    static func decode(_ data: Data) throws -> (width: Int, height: Int, bytes: [UInt8]) {
+        guard data.count >= headerSize + 8 else {
+            throw FileFormatError.invalidFile("selection.bin too short")
+        }
+        let magicBytes = [UInt8](data.subdata(in: 0..<8))
+        guard magicBytes == magic else {
+            throw FileFormatError.invalidFile("selection.bin missing INKSELC magic")
+        }
+        let v = readUInt32LE(data, offset: 8)
+        guard v == version else {
+            throw FileFormatError.unsupportedVersion(Int(v))
+        }
+        let w = Int(readUInt32LE(data, offset: 16))
+        let h = Int(readUInt32LE(data, offset: 20))
+        let expected = w * h
+        guard data.count >= headerSize + 8 + expected else {
+            throw FileFormatError.invalidFile("selection.bin pixel data truncated")
+        }
+        let pixelBytes = [UInt8](data.subdata(in: (headerSize + 8)..<(headerSize + 8 + expected)))
+        return (w, h, pixelBytes)
+    }
+}
+
 // MARK: - Errors
 
 enum FileFormatError: Error, LocalizedError {
@@ -290,6 +335,14 @@ extension Canvas {
             FileFormat.tilesFilename: FileWrapper(regularFileWithContents: tilesData),
             FileFormat.thumbnailFilename: FileWrapper(regularFileWithContents: thumbnailData)
         ]
+        if let selection = selection {
+            let selectionData = SelectionFile.encode(
+                width: width,
+                height: height,
+                bytes: selection.bytes
+            )
+            entries[FileFormat.selectionFilename] = FileWrapper(regularFileWithContents: selectionData)
+        }
 
         // Set preferred filenames so FileWrapper writes them with the right names.
         for (name, wrapper) in entries {
@@ -375,6 +428,22 @@ extension Canvas {
 
         let activeId = manifest.activeLayerId.flatMap { UUID(uuidString: $0) }
         replaceLayers(newRoots, activeLayerId: activeId)
+
+        // Selection (optional)
+        if let selectionRaw = children[FileFormat.selectionFilename]?.regularFileContents {
+            do {
+                let (sw, sh, bytes) = try SelectionFile.decode(selectionRaw)
+                guard sw == width, sh == height else {
+                    throw FileFormatError.invalidFile(
+                        "selection.bin dimensions \(sw)×\(sh) ≠ canvas \(width)×\(height)"
+                    )
+                }
+                replaceSelectionBytes(bytes)
+            } catch {
+                // Non-fatal: log and continue without a selection.
+                NSLog("Could not load selection: \(error)")
+            }
+        }
     }
 
     // MARK: - Codec helpers

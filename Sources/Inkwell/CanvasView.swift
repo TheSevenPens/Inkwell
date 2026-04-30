@@ -8,6 +8,12 @@ private enum StrokeTarget {
     case mask(layerId: UUID)
 }
 
+private enum SelectionGesture {
+    case rectangle(start: CGPoint, current: CGPoint, op: Selection.Op)
+    case ellipse(start: CGPoint, current: CGPoint, op: Selection.Op)
+    case lasso(points: [CGPoint], op: Selection.Op)
+}
+
 final class CanvasView: MTKView {
     private weak var document: Document?
     private let canvas: Canvas
@@ -23,8 +29,11 @@ final class CanvasView: MTKView {
     private var strokeBeforeMask = LayerMask.TileSnapshot.empty
     private var strokeAffectedCoords: Set<TileCoord> = []
 
+    private var selectionGesture: SelectionGesture?
+
     private var lastSample: StylusSample?
     private var airbrushTimer: Timer?
+    private var antsTimer: Timer?
 
     private var viewTransform = ViewTransform()
     private var hasFitOnce = false
@@ -85,6 +94,7 @@ final class CanvasView: MTKView {
 
         document.onCanvasChanged = { [weak self] in
             self?.needsDisplay = true
+            self?.updateAntsTimer()
         }
 
         BrushPalette.shared.addObserver { [weak self] in
@@ -93,7 +103,15 @@ final class CanvasView: MTKView {
 
         canvas.addObserver { [weak self] in
             self?.needsDisplay = true
+            self?.updateAntsTimer()
         }
+
+        ToolState.shared.addObserver { [weak self] in
+            if let win = self?.window { win.invalidateCursorRects(for: self!) }
+            self?.needsDisplay = true
+        }
+
+        updateAntsTimer()
     }
 
     @available(*, unavailable)
@@ -182,6 +200,11 @@ final class CanvasView: MTKView {
         )
     }
 
+    private func canvasPointForEvent(_ event: NSEvent) -> CGPoint {
+        let local = convert(event.locationInWindow, from: nil)
+        return viewTransform.windowToCanvas(local)
+    }
+
     private func visibleCanvasRect() -> CGRect {
         let w = bounds.width
         let h = bounds.height
@@ -196,28 +219,54 @@ final class CanvasView: MTKView {
         return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
-    // MARK: - Mouse / stylus
+    // MARK: - Mouse / stylus dispatch
 
     override func mouseDown(with event: NSEvent) {
         if spaceHeld { beginPan(with: event); return }
-        beginStroke(at: sampleFor(event: event))
+        switch ToolState.shared.tool {
+        case .brush:
+            beginStroke(at: sampleFor(event: event))
+        case .selectRectangle:
+            beginSelectionGesture(.rectangle(start: canvasPointForEvent(event),
+                                             current: canvasPointForEvent(event),
+                                             op: selectionOp(event)))
+        case .selectEllipse:
+            beginSelectionGesture(.ellipse(start: canvasPointForEvent(event),
+                                           current: canvasPointForEvent(event),
+                                           op: selectionOp(event)))
+        case .selectLasso:
+            beginSelectionGesture(.lasso(points: [canvasPointForEvent(event)],
+                                         op: selectionOp(event)))
+        }
     }
 
     override func mouseDragged(with event: NSEvent) {
         if isPanning { continuePan(with: event); return }
-        let sample = sampleFor(event: event)
-        lastSample = sample
-        emitter?.continueTo(sample)
+        switch ToolState.shared.tool {
+        case .brush:
+            let sample = sampleFor(event: event)
+            lastSample = sample
+            emitter?.continueTo(sample)
+        case .selectRectangle, .selectEllipse, .selectLasso:
+            updateSelectionGesture(with: canvasPointForEvent(event))
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
         if isPanning { endPan(with: event); return }
-        let sample = sampleFor(event: event)
-        emitter?.end(sample)
-        emitter = nil
-        stopAirbrushTimer()
-        commitUndoIfNeeded()
+        switch ToolState.shared.tool {
+        case .brush:
+            let sample = sampleFor(event: event)
+            emitter?.end(sample)
+            emitter = nil
+            stopAirbrushTimer()
+            commitUndoIfNeeded()
+        case .selectRectangle, .selectEllipse, .selectLasso:
+            commitSelectionGesture()
+        }
     }
+
+    // MARK: - Brush stroke path
 
     private func beginStroke(at sample: StylusSample) {
         guard let activeBitmap = canvas.activeBitmapLayer else { return }
@@ -244,25 +293,23 @@ final class CanvasView: MTKView {
         guard let stampRenderer, let tipTex = tipTexture,
               let strokeTarget else { return }
         let brush = BrushPalette.shared.activeBrush
+        let selectionTexture = canvas.selection?.texture ?? canvas.defaultMaskTexture
 
         let sizePressure = lerp(1.0, brush.pressureToSize.evaluate(sample.pressure),
                                 brush.pressureToSizeStrength)
         let alphaPressure = lerp(1.0, brush.pressureToOpacity.evaluate(sample.pressure),
                                  brush.pressureToOpacityStrength)
-
         let tiltMag = min(1.0, sqrt(sample.tiltX * sample.tiltX + sample.tiltY * sample.tiltY))
         let tiltSizeFactor = 1.0 - brush.tiltSizeInfluence * tiltMag
         let tiltAngle: CGFloat = brush.tiltAngleFollow
             ? atan2(sample.tiltY, sample.tiltX)
             : 0
-
         let sizeJitter = brush.sizeJitter > 0
             ? 1.0 + CGFloat.random(in: -brush.sizeJitter...brush.sizeJitter)
             : 1.0
         let opacityJitter = brush.opacityJitter > 0
             ? 1.0 - CGFloat.random(in: 0...brush.opacityJitter)
             : 1.0
-
         let radius = max(0.5, brush.radius * sizePressure * tiltSizeFactor * sizeJitter)
         let alpha = max(0, min(1, brush.opacity * alphaPressure * opacityJitter))
 
@@ -295,7 +342,12 @@ final class CanvasView: MTKView {
                 color: brush.color.simd,
                 blendMode: brush.blendMode
             )
-            stampRenderer.applyStamp(dispatch, tipTexture: tipTex, layer: layer)
+            stampRenderer.applyStamp(
+                dispatch,
+                tipTexture: tipTex,
+                selectionTexture: selectionTexture,
+                layer: layer
+            )
 
         case .mask(let layerId):
             guard let layer = canvas.findLayer(layerId) as? BitmapLayer,
@@ -310,7 +362,6 @@ final class CanvasView: MTKView {
                 strokeBeforeMask.absentTiles.formUnion(snap.absentTiles)
                 strokeAffectedCoords.formUnion(newCoords)
             }
-            // Mask painting: stamp value = brush color luminance (Rec. 709).
             let c = brush.color.simd
             let luminance = 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z
             let dispatch = StampDispatch(
@@ -321,7 +372,12 @@ final class CanvasView: MTKView {
                 color: SIMD4<Float>(luminance, luminance, luminance, 1.0),
                 blendMode: .normal
             )
-            stampRenderer.applyMaskStamp(dispatch, tipTexture: tipTex, mask: mask)
+            stampRenderer.applyMaskStamp(
+                dispatch,
+                tipTexture: tipTex,
+                selectionTexture: selectionTexture,
+                mask: mask
+            )
         }
         needsDisplay = true
     }
@@ -350,10 +406,118 @@ final class CanvasView: MTKView {
         }
     }
 
+    // MARK: - Selection gesture
+
+    private func selectionOp(_ event: NSEvent) -> Selection.Op {
+        let mods = event.modifierFlags
+        let shift = mods.contains(.shift)
+        let opt = mods.contains(.option)
+        if shift && opt { return .intersect }
+        if shift { return .add }
+        if opt { return .subtract }
+        return .replace
+    }
+
+    private func beginSelectionGesture(_ gesture: SelectionGesture) {
+        selectionGesture = gesture
+    }
+
+    private func updateSelectionGesture(with point: CGPoint) {
+        guard var g = selectionGesture else { return }
+        switch g {
+        case .rectangle(let start, _, let op):
+            g = .rectangle(start: start, current: point, op: op)
+        case .ellipse(let start, _, let op):
+            g = .ellipse(start: start, current: point, op: op)
+        case .lasso(var points, let op):
+            points.append(point)
+            g = .lasso(points: points, op: op)
+        }
+        selectionGesture = g
+        // No live preview in Phase 7 Pass 1; commit on mouseUp.
+    }
+
+    private func commitSelectionGesture() {
+        guard let g = selectionGesture else { return }
+        defer { selectionGesture = nil }
+        guard let document else { return }
+        switch g {
+        case .rectangle(let start, let current, let op):
+            let rect = CGRect(
+                x: min(start.x, current.x),
+                y: min(start.y, current.y),
+                width: abs(current.x - start.x),
+                height: abs(current.y - start.y)
+            )
+            guard rect.width >= 1, rect.height >= 1 else { return }
+            applySelectionShape(.rectangle(rect: rect), op: op)
+        case .ellipse(let start, let current, let op):
+            let rect = CGRect(
+                x: min(start.x, current.x),
+                y: min(start.y, current.y),
+                width: abs(current.x - start.x),
+                height: abs(current.y - start.y)
+            )
+            guard rect.width >= 1, rect.height >= 1 else { return }
+            applySelectionShape(.ellipse(rect: rect), op: op)
+        case .lasso(let points, let op):
+            guard points.count >= 3 else { return }
+            let path = CGMutablePath()
+            path.move(to: points[0])
+            for p in points.dropFirst() { path.addLine(to: p) }
+            path.closeSubpath()
+            applySelectionShape(.path(path), op: op)
+        }
+        document.updateChangeCount(.changeDone)
+    }
+
+    private enum Shape {
+        case rectangle(rect: CGRect)
+        case ellipse(rect: CGRect)
+        case path(CGPath)
+    }
+
+    private func applySelectionShape(_ shape: Shape, op: Selection.Op) {
+        let scratch = canvas.selection ?? Selection(
+            device: canvas.device,
+            canvasWidth: canvas.width,
+            canvasHeight: canvas.height
+        )
+        let bytes: [UInt8]
+        switch shape {
+        case .rectangle(let rect):
+            bytes = scratch.rasterizeRect(rect)
+        case .ellipse(let rect):
+            bytes = scratch.rasterizeEllipse(in: rect)
+        case .path(let path):
+            bytes = scratch.rasterizePath(path)
+        }
+        canvas.applySelection(shape: bytes, op: op)
+    }
+
+    // MARK: - Selection menu actions (routed via responder chain)
+
+    @objc override func selectAll(_ sender: Any?) {
+        canvas.selectAll()
+        document?.updateChangeCount(.changeDone)
+    }
+
+    @objc func deselect(_ sender: Any?) {
+        canvas.deselect()
+        document?.updateChangeCount(.changeDone)
+    }
+
+    @objc func invertSelection(_ sender: Any?) {
+        canvas.invertSelection()
+        document?.updateChangeCount(.changeDone)
+    }
+
     // MARK: - Mouse-moved (cursor + airbrush)
 
     override func mouseMoved(with event: NSEvent) {
-        lastSample = sampleFor(event: event)
+        if ToolState.shared.tool == .brush {
+            lastSample = sampleFor(event: event)
+        }
     }
 
     // MARK: - Airbrush
@@ -375,6 +539,21 @@ final class CanvasView: MTKView {
     private func airbrushTick() {
         guard let sample = lastSample, emitter != nil else { return }
         dispatchSample(sample)
+    }
+
+    // MARK: - Marching ants animation
+
+    private func updateAntsTimer() {
+        if canvas.selection != nil {
+            if antsTimer == nil {
+                antsTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+                    self?.needsDisplay = true
+                }
+            }
+        } else {
+            antsTimer?.invalidate()
+            antsTimer = nil
+        }
     }
 
     // MARK: - Pan
@@ -449,7 +628,12 @@ final class CanvasView: MTKView {
         } else if spaceHeld {
             NSCursor.openHand.set()
         } else {
-            brushCursor().set()
+            switch ToolState.shared.tool {
+            case .brush:
+                brushCursor().set()
+            case .selectRectangle, .selectEllipse, .selectLasso:
+                NSCursor.crosshair.set()
+            }
         }
     }
 

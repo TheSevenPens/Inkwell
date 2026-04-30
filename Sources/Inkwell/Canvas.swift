@@ -30,6 +30,10 @@ final class Canvas {
 
     private(set) lazy var defaultMaskTexture: any MTLTexture = LayerMaskTextures.makeDefaultMask(device: device)
 
+    /// Document-level selection mask. `nil` when no selection is active —
+    /// stamp pipelines treat the whole canvas as selected.
+    private(set) var selection: Selection?
+
     private var observers: [() -> Void] = []
 
     init(width: Int, height: Int, device: any MTLDevice) throws {
@@ -101,6 +105,62 @@ final class Canvas {
         guard let layer = activeBitmapLayer, layer.mask != nil else { return }
         layer.mask = nil
         editingMask = false
+        notifyChanged()
+    }
+
+    // MARK: - Selection helpers
+
+    /// Apply a shape operation to the selection. Creates the Selection lazily if
+    /// none exists. After the op, if the selection is empty (all zero), it is
+    /// discarded so stamp pipelines return to unconstrained painting.
+    func applySelection(shape: [UInt8], op: Selection.Op) {
+        let sel = selection ?? Selection(device: device, canvasWidth: width, canvasHeight: height)
+        sel.apply(shape: shape, op: op)
+        if sel.isEmpty() {
+            selection = nil
+        } else {
+            selection = sel
+        }
+        notifyChanged()
+    }
+
+    func selectAll() {
+        let sel = selection ?? Selection(device: device, canvasWidth: width, canvasHeight: height)
+        sel.selectAll()
+        selection = sel
+        notifyChanged()
+    }
+
+    func deselect() {
+        selection = nil
+        notifyChanged()
+    }
+
+    func invertSelection() {
+        if let sel = selection {
+            sel.invert()
+            if sel.isEmpty() {
+                selection = nil
+            }
+            notifyChanged()
+        } else {
+            // No selection = nothing selected; inverse = everything selected.
+            selectAll()
+        }
+    }
+
+    /// Replace the selection bytes wholesale (used by the bundle loader).
+    /// Discards an existing Selection and creates a fresh one if `bytes`
+    /// has any non-zero pixel.
+    func replaceSelectionBytes(_ bytes: [UInt8]) {
+        guard bytes.count == width * height else { return }
+        if bytes.allSatisfy({ $0 == 0 }) {
+            selection = nil
+        } else {
+            let sel = Selection(device: device, canvasWidth: width, canvasHeight: height)
+            sel.setBytes(bytes)
+            selection = sel
+        }
         notifyChanged()
     }
 

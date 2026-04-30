@@ -2,7 +2,8 @@ import AppKit
 
 final class BrushPickerView: NSView {
     private var stack: NSStackView!
-    private var buttons: [NSButton] = []
+    private var brushButtons: [NSButton] = []
+    private var toolButtons: [(button: NSButton, tool: ToolState.Tool)] = []
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -10,6 +11,9 @@ final class BrushPickerView: NSView {
         layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         buildLayout()
         BrushPalette.shared.addObserver { [weak self] in
+            self?.refreshSelection()
+        }
+        ToolState.shared.addObserver { [weak self] in
             self?.refreshSelection()
         }
     }
@@ -32,10 +36,10 @@ final class BrushPickerView: NSView {
             stack.trailingAnchor.constraint(equalTo: trailingAnchor)
         ])
 
-        let title = NSTextField(labelWithString: "Brush")
-        title.font = NSFont.boldSystemFont(ofSize: 12)
-        title.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(title)
+        let brushTitle = NSTextField(labelWithString: "Brushes")
+        brushTitle.font = .boldSystemFont(ofSize: 12)
+        brushTitle.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(brushTitle)
 
         for (idx, brush) in BrushPalette.shared.brushes.enumerated() {
             let button = NSButton()
@@ -48,18 +52,58 @@ final class BrushPickerView: NSView {
             button.translatesAutoresizingMaskIntoConstraints = false
             stack.addArrangedSubview(button)
             button.widthAnchor.constraint(equalToConstant: 100).isActive = true
-            buttons.append(button)
+            brushButtons.append(button)
         }
+
+        // Spacer
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.heightAnchor.constraint(equalToConstant: 6).isActive = true
+        stack.addArrangedSubview(spacer)
+
+        let toolsTitle = NSTextField(labelWithString: "Selection")
+        toolsTitle.font = .boldSystemFont(ofSize: 12)
+        toolsTitle.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(toolsTitle)
+
+        let toolDefs: [(name: String, tool: ToolState.Tool)] = [
+            ("Rectangle", .selectRectangle),
+            ("Ellipse", .selectEllipse),
+            ("Lasso", .selectLasso)
+        ]
+        for def in toolDefs {
+            let button = NSButton()
+            button.title = def.name
+            button.bezelStyle = .roundRect
+            button.setButtonType(.pushOnPushOff)
+            button.target = self
+            button.action = #selector(toolButtonClicked(_:))
+            button.translatesAutoresizingMaskIntoConstraints = false
+            stack.addArrangedSubview(button)
+            button.widthAnchor.constraint(equalToConstant: 100).isActive = true
+            toolButtons.append((button: button, tool: def.tool))
+        }
+
         refreshSelection()
     }
 
     private func refreshSelection() {
-        for (idx, button) in buttons.enumerated() {
-            button.state = idx == BrushPalette.shared.activeIndex ? .on : .off
+        let toolIsBrush = ToolState.shared.tool == .brush
+        for (idx, button) in brushButtons.enumerated() {
+            button.state = (toolIsBrush && idx == BrushPalette.shared.activeIndex) ? .on : .off
+        }
+        for entry in toolButtons {
+            entry.button.state = (ToolState.shared.tool == entry.tool) ? .on : .off
         }
     }
 
     @objc private func brushButtonClicked(_ sender: NSButton) {
         BrushPalette.shared.setActiveIndex(sender.tag)
+        ToolState.shared.setTool(.brush)
+    }
+
+    @objc private func toolButtonClicked(_ sender: NSButton) {
+        guard let entry = toolButtons.first(where: { $0.button === sender }) else { return }
+        ToolState.shared.setTool(entry.tool)
     }
 }
