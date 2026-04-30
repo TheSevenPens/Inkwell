@@ -34,6 +34,7 @@ final class CanvasView: MTKView {
     private var preGestureSelectionBytes: [UInt8]?
 
     private var lastSample: StylusSample?
+    private var lastCursorWindow: CGPoint?
     private var airbrushTimer: Timer?
     private var antsTimer: Timer?
 
@@ -51,6 +52,21 @@ final class CanvasView: MTKView {
 
     /// Set by DocumentWindowController; called when the user presses Tab.
     var onTogglePanels: (() -> Void)?
+
+    /// Set by DocumentWindowController; called whenever the values shown in the
+    /// status bar might have changed (zoom, cursor position, doc size).
+    var onStatusChanged: ((StatusSnapshot) -> Void)?
+
+    struct StatusSnapshot {
+        /// Current zoom as a percentage, e.g. 100 for 1:1.
+        var zoomPercent: Int
+        /// Cursor position in canvas-pixel coords, or nil if the cursor is outside the canvas region.
+        var canvasPosition: CGPoint?
+        /// Document dimensions in canvas pixels.
+        var documentSize: (width: Int, height: Int)
+        /// View rotation in degrees (CCW positive). 0 if no rotation applied.
+        var rotationDegrees: Int
+    }
 
     init(document: Document) {
         self.document = document
@@ -216,6 +232,25 @@ final class CanvasView: MTKView {
     private func canvasPointForEvent(_ event: NSEvent) -> CGPoint {
         let local = convert(event.locationInWindow, from: nil)
         return viewTransform.windowToCanvas(local)
+    }
+
+    private func publishStatus(cursorWindow: CGPoint?) {
+        let zoomPct = Int((viewTransform.scale * 100.0).rounded())
+        let degrees = Int((viewTransform.rotation * 180.0 / .pi).rounded())
+        let normalizedDegrees = ((degrees % 360) + 360) % 360
+        var canvasPos: CGPoint? = nil
+        if let cw = cursorWindow {
+            let p = viewTransform.windowToCanvas(cw)
+            if p.x >= 0, p.x < CGFloat(canvas.width), p.y >= 0, p.y < CGFloat(canvas.height) {
+                canvasPos = p
+            }
+        }
+        onStatusChanged?(StatusSnapshot(
+            zoomPercent: zoomPct,
+            canvasPosition: canvasPos,
+            documentSize: (canvas.width, canvas.height),
+            rotationDegrees: normalizedDegrees
+        ))
     }
 
     private func visibleCanvasRect() -> CGRect {
@@ -607,12 +642,24 @@ final class CanvasView: MTKView {
         document?.updateChangeCount(.changeDone)
     }
 
-    // MARK: - Mouse-moved
+    // MARK: - Mouse-moved / entered / exited
 
     override func mouseMoved(with event: NSEvent) {
         if ToolState.shared.tool == .brush {
             lastSample = sampleFor(event: event)
         }
+        lastCursorWindow = convert(event.locationInWindow, from: nil)
+        publishStatus(cursorWindow: lastCursorWindow)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        lastCursorWindow = convert(event.locationInWindow, from: nil)
+        publishStatus(cursorWindow: lastCursorWindow)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        lastCursorWindow = nil
+        publishStatus(cursorWindow: nil)
     }
 
     // MARK: - Airbrush
@@ -845,5 +892,9 @@ extension CanvasView: MTKViewDelegate {
             viewTransform: matrix,
             visibleCanvasRect: visibleCanvasRect()
         )
+        // Publish status every frame the canvas redraws — captures view transform
+        // changes (zoom, pan, rotate, fit) without sprinkling publishStatus calls
+        // through every mutator.
+        publishStatus(cursorWindow: lastCursorWindow)
     }
 }

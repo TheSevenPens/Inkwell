@@ -11,12 +11,13 @@ final class DocumentWindowController: NSWindowController {
         let inspector = BrushInspectorView()
         let layerPanel = LayerPanelView()
         layerPanel.attach(canvas: document.canvas)
+        let statusBar = StatusBarView()
 
+        // Right sidebar: inspector at top, layer panel filling below.
         let rightHost = NSView()
         rightHost.translatesAutoresizingMaskIntoConstraints = false
         rightHost.wantsLayer = true
         rightHost.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-
         rightHost.addSubview(inspector)
         rightHost.addSubview(layerPanel)
         inspector.translatesAutoresizingMaskIntoConstraints = false
@@ -31,6 +32,25 @@ final class DocumentWindowController: NSWindowController {
             layerPanel.bottomAnchor.constraint(equalTo: rightHost.bottomAnchor)
         ])
 
+        // Canvas area: canvas view stacked above the status bar.
+        let canvasArea = NSView()
+        canvasArea.translatesAutoresizingMaskIntoConstraints = false
+        canvasArea.addSubview(canvasView)
+        canvasArea.addSubview(statusBar)
+        canvasView.translatesAutoresizingMaskIntoConstraints = false
+        statusBar.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            canvasView.topAnchor.constraint(equalTo: canvasArea.topAnchor),
+            canvasView.leadingAnchor.constraint(equalTo: canvasArea.leadingAnchor),
+            canvasView.trailingAnchor.constraint(equalTo: canvasArea.trailingAnchor),
+            statusBar.topAnchor.constraint(equalTo: canvasView.bottomAnchor),
+            statusBar.leadingAnchor.constraint(equalTo: canvasArea.leadingAnchor),
+            statusBar.trailingAnchor.constraint(equalTo: canvasArea.trailingAnchor),
+            statusBar.bottomAnchor.constraint(equalTo: canvasArea.bottomAnchor),
+            statusBar.heightAnchor.constraint(equalToConstant: 24)
+        ])
+
+        // Top-level horizontal container.
         let container = NSStackView()
         container.orientation = .horizontal
         container.spacing = 0
@@ -38,16 +58,13 @@ final class DocumentWindowController: NSWindowController {
         container.alignment = .top
         container.translatesAutoresizingMaskIntoConstraints = false
         container.addArrangedSubview(brushPicker)
-        container.addArrangedSubview(canvasView)
+        container.addArrangedSubview(canvasArea)
         container.addArrangedSubview(rightHost)
 
         brushPicker.translatesAutoresizingMaskIntoConstraints = false
-        canvasView.translatesAutoresizingMaskIntoConstraints = false
-        let pickerWidth = brushPicker.widthAnchor.constraint(equalToConstant: 130)
-        pickerWidth.isActive = true
-        let rightWidth = rightHost.widthAnchor.constraint(equalToConstant: 300)
-        rightWidth.isActive = true
-        canvasView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        brushPicker.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        rightHost.widthAnchor.constraint(equalToConstant: 300).isActive = true
+        canvasArea.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let window = NSWindow(
             contentRect: NSRect(x: 100, y: 100, width: 1500, height: 950),
@@ -65,8 +82,8 @@ final class DocumentWindowController: NSWindowController {
             container.bottomAnchor.constraint(equalTo: host.bottomAnchor),
             brushPicker.topAnchor.constraint(equalTo: container.topAnchor),
             brushPicker.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            canvasView.topAnchor.constraint(equalTo: container.topAnchor),
-            canvasView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            canvasArea.topAnchor.constraint(equalTo: container.topAnchor),
+            canvasArea.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             rightHost.topAnchor.constraint(equalTo: container.topAnchor),
             rightHost.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
@@ -77,6 +94,9 @@ final class DocumentWindowController: NSWindowController {
         self.brushPicker = brushPicker
         self.rightHost = rightHost
         canvasView.onTogglePanels = { [weak self] in self?.togglePanels() }
+        canvasView.onStatusChanged = { [weak statusBar] snapshot in
+            statusBar?.update(snapshot: snapshot)
+        }
     }
 
     @available(*, unavailable)

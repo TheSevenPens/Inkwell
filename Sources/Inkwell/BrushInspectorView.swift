@@ -6,7 +6,25 @@ final class BrushInspectorView: NSView {
     private var nameLabel: NSTextField!
     private var rows: [String: SliderRow] = [:]
     private var colorWell: NSColorWell!
+    private var hexField: NSTextField!
     private var refreshing = false
+
+    /// Built-in swatch palette. Phase 11 Pass 1 ships these only; user-saved
+    /// swatches are a follow-up.
+    private static let builtinSwatches: [ColorRGBA] = [
+        ColorRGBA(r: 0.00, g: 0.00, b: 0.00),  // black
+        ColorRGBA(r: 0.30, g: 0.30, b: 0.30),  // dark gray
+        ColorRGBA(r: 0.65, g: 0.65, b: 0.65),  // light gray
+        ColorRGBA(r: 1.00, g: 1.00, b: 1.00),  // white
+        ColorRGBA(r: 0.85, g: 0.10, b: 0.10),  // red
+        ColorRGBA(r: 0.95, g: 0.55, b: 0.10),  // orange
+        ColorRGBA(r: 0.95, g: 0.85, b: 0.20),  // yellow
+        ColorRGBA(r: 0.20, g: 0.65, b: 0.25),  // green
+        ColorRGBA(r: 0.10, g: 0.40, b: 0.85),  // blue
+        ColorRGBA(r: 0.55, g: 0.20, b: 0.75),  // purple
+        ColorRGBA(r: 0.85, g: 0.45, b: 0.65),  // pink
+        ColorRGBA(r: 0.45, g: 0.30, b: 0.15)   // brown
+    ]
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -58,9 +76,32 @@ final class BrushInspectorView: NSView {
         colorWell.translatesAutoresizingMaskIntoConstraints = false
         colorWell.widthAnchor.constraint(equalToConstant: 36).isActive = true
         colorWell.heightAnchor.constraint(equalToConstant: 22).isActive = true
+
+        hexField = NSTextField()
+        hexField.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        hexField.placeholderString = "#000000"
+        hexField.target = self
+        hexField.action = #selector(hexChanged(_:))
+        hexField.translatesAutoresizingMaskIntoConstraints = false
+        hexField.widthAnchor.constraint(equalToConstant: 80).isActive = true
+
         colorRow.addArrangedSubview(colorLabel)
         colorRow.addArrangedSubview(colorWell)
+        colorRow.addArrangedSubview(hexField)
         stack.addArrangedSubview(colorRow)
+
+        // Swatches: 12 built-in colors in a single row.
+        let swatchRow = NSStackView()
+        swatchRow.orientation = .horizontal
+        swatchRow.spacing = 2
+        swatchRow.alignment = .centerY
+        for color in Self.builtinSwatches {
+            let button = SwatchButton(color: color)
+            button.target = self
+            button.action = #selector(swatchClicked(_:))
+            swatchRow.addArrangedSubview(button)
+        }
+        stack.addArrangedSubview(swatchRow)
 
         addSliderRow(key: "size", label: "Size", min: 1, max: 80, fmt: "%.1f")
         addSliderRow(key: "hardness", label: "Hardness", min: 0, max: 1, fmt: "%.2f")
@@ -125,6 +166,7 @@ final class BrushInspectorView: NSView {
             alpha: b.color.a
         )
         colorWell.color = nsColor
+        hexField.stringValue = hexString(from: b.color)
         rows["size"]?.value = Double(b.radius)
         rows["hardness"]?.value = Double(b.hardness)
         rows["spacing"]?.value = Double(b.spacing)
@@ -145,6 +187,69 @@ final class BrushInspectorView: NSView {
             brush.color = ColorRGBA(r: rr, g: gg, b: bb, a: aa)
         }
     }
+
+    @objc private func hexChanged(_ sender: NSTextField) {
+        guard !refreshing else { return }
+        if let color = parseHexColor(sender.stringValue) {
+            BrushPalette.shared.updateActive { $0.color = color }
+        } else {
+            // Restore the field with the current brush's hex on parse failure.
+            sender.stringValue = hexString(from: BrushPalette.shared.activeBrush.color)
+        }
+    }
+
+    @objc fileprivate func swatchClicked(_ sender: SwatchButton) {
+        BrushPalette.shared.updateActive { $0.color = sender.color }
+    }
+}
+
+private func parseHexColor(_ s: String) -> ColorRGBA? {
+    var hex = s.trimmingCharacters(in: .whitespacesAndNewlines)
+    if hex.hasPrefix("#") { hex.removeFirst() }
+    guard hex.count == 6 || hex.count == 3 else { return nil }
+    if hex.count == 3 {
+        // Expand "abc" → "aabbcc"
+        hex = hex.map { "\($0)\($0)" }.joined()
+    }
+    guard let value = UInt32(hex, radix: 16) else { return nil }
+    let r = CGFloat((value >> 16) & 0xFF) / 255.0
+    let g = CGFloat((value >> 8) & 0xFF) / 255.0
+    let b = CGFloat(value & 0xFF) / 255.0
+    return ColorRGBA(r: r, g: g, b: b, a: 1.0)
+}
+
+private func hexString(from color: ColorRGBA) -> String {
+    let r = max(0, min(255, Int((color.r * 255).rounded())))
+    let g = max(0, min(255, Int((color.g * 255).rounded())))
+    let b = max(0, min(255, Int((color.b * 255).rounded())))
+    return String(format: "#%02X%02X%02X", r, g, b)
+}
+
+fileprivate final class SwatchButton: NSButton {
+    let color: ColorRGBA
+
+    init(color: ColorRGBA) {
+        self.color = color
+        super.init(frame: .zero)
+        title = ""
+        bezelStyle = .smallSquare
+        isBordered = false
+        wantsLayer = true
+        layer?.backgroundColor = color.cgColor
+        layer?.borderColor = NSColor.separatorColor.cgColor
+        layer?.borderWidth = 0.5
+        layer?.cornerRadius = 2
+        translatesAutoresizingMaskIntoConstraints = false
+        widthAnchor.constraint(equalToConstant: 18).isActive = true
+        heightAnchor.constraint(equalToConstant: 18).isActive = true
+        toolTip = String(format: "#%02X%02X%02X",
+                         Int((color.r * 255).rounded()),
+                         Int((color.g * 255).rounded()),
+                         Int((color.b * 255).rounded()))
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
 }
 
 private final class SliderRow: NSStackView {
