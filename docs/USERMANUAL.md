@@ -26,12 +26,11 @@ The features below describe the v1 scope. Items deliberately deferred to later v
 
 ## File interop
 
-- **Export** to PSD (8-bit, 16-bit, or 32-bit float; default 16-bit).
-- **Export** to PNG (transparency preserved, profile-tagged).
-- **Export** to JPG (configurable background flatten, profile-tagged).
-- **Import** from PSD (layer tree, blend modes, masks, with documented fidelity).
-- **Import** from PNG and JPG as single-layer documents.
-- A published PSD fidelity table documents what travels exactly, what is approximated, and what is lost on round-trip.
+- **Export** to PNG (transparency preserved).
+- **Export** to JPEG (white background flatten).
+- **Export** to PSD (Phase 9 Pass 1 ships flat 8-bit composite; layer-aware export is a follow-up).
+- **Import** from PSD, PNG, and JPEG as a single-layer document (PSD layer-aware import is a Phase 9 Pass 2 follow-up).
+- The published [PSD fidelity table](PSD_FIDELITY.md) documents what travels exactly, what is approximated, and what is lost on round-trip.
 
 ## Layers
 

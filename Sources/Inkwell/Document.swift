@@ -1,5 +1,6 @@
 import AppKit
 import Metal
+import UniformTypeIdentifiers
 
 final class Document: NSDocument {
     let canvas: Canvas
@@ -18,12 +19,15 @@ final class Document: NSDocument {
 
     override class var autosavesInPlace: Bool { true }
 
+    /// Native: `.inkwell` (read + write).
+    /// Read-only: PNG / JPEG / PSD imports as a single flattened bitmap layer
+    /// (PSD layer-aware import is a Phase 9 Pass 2 follow-up).
     override class var readableTypes: [String] {
-        [FileFormat.inkwellUTI, "public.png"]
+        [FileFormat.inkwellUTI, "public.png", "public.jpeg", "com.adobe.photoshop-image"]
     }
 
     override class var writableTypes: [String] {
-        [FileFormat.inkwellUTI]
+        [FileFormat.inkwellUTI]  // PNG / JPEG / PSD are reachable via Export, not Save.
     }
 
     override class func isNativeType(_ type: String) -> Bool {
@@ -45,6 +49,8 @@ final class Document: NSDocument {
     }
 
     override func data(ofType typeName: String) throws -> Data {
+        // Used only for non-bundle writable types. Today writableTypes is inkwell-only,
+        // but if super calls into us we still need a sensible default.
         if typeName == "public.png" {
             return try canvas.encodePNGData()
         }
@@ -56,16 +62,78 @@ final class Document: NSDocument {
     override func read(from fileWrapper: FileWrapper, ofType typeName: String) throws {
         if typeName == FileFormat.inkwellUTI {
             try canvas.deserializeFromBundle(fileWrapper)
-        } else if typeName == "public.png" {
+        } else if typeName == "public.png"
+                    || typeName == "public.jpeg"
+                    || typeName == "com.adobe.photoshop-image" {
             guard let data = fileWrapper.regularFileContents else {
-                throw FileFormatError.invalidFile("PNG has no content")
+                throw FileFormatError.invalidFile("Image has no content")
             }
+            // canvas.loadPNG uses CGImageSource which decodes PNG, JPEG, and PSD
+            // (PSD comes back as the flattened composite). Layer-aware PSD import
+            // is a Phase 9 Pass 2 follow-up.
             try canvas.loadPNG(from: data)
         } else {
             try super.read(from: fileWrapper, ofType: typeName)
         }
         onCanvasChanged?()
         undoManager?.removeAllActions()
+    }
+
+    // MARK: - Export
+
+    @objc func exportAsPNG(_ sender: Any?) {
+        runExportPanel(typeName: "PNG", contentType: .png, ext: "png") { [weak self] url in
+            guard let self else { return }
+            let data = try self.canvas.encodePNGData()
+            try data.write(to: url, options: .atomic)
+        }
+    }
+
+    @objc func exportAsJPEG(_ sender: Any?) {
+        runExportPanel(typeName: "JPEG", contentType: .jpeg, ext: "jpg") { [weak self] url in
+            guard let self else { return }
+            let data = try self.canvas.encodeJPEGData()
+            try data.write(to: url, options: .atomic)
+        }
+    }
+
+    @objc func exportAsPSD(_ sender: Any?) {
+        let psdType = UTType("com.adobe.photoshop-image") ?? .data
+        runExportPanel(typeName: "PSD", contentType: psdType, ext: "psd") { [weak self] url in
+            guard let self else { return }
+            let data = try self.canvas.encodePSDData()
+            try data.write(to: url, options: .atomic)
+        }
+    }
+
+    private func runExportPanel(
+        typeName: String,
+        contentType: UTType,
+        ext: String,
+        write: @escaping (URL) throws -> Void
+    ) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [contentType]
+        panel.canCreateDirectories = true
+        let baseName = (displayName as String?) ?? "Untitled"
+        panel.nameFieldStringValue = baseName + "." + ext
+        let host = windowControllers.first?.window
+        let handler: (NSApplication.ModalResponse) -> Void = { response in
+            if response == .OK, let url = panel.url {
+                do {
+                    try write(url)
+                } catch {
+                    let alert = NSAlert(error: error)
+                    alert.messageText = "Could not export \(typeName)"
+                    alert.runModal()
+                }
+            }
+        }
+        if let host = host {
+            panel.beginSheetModal(for: host, completionHandler: handler)
+        } else {
+            panel.begin(completionHandler: handler)
+        }
     }
 
     // MARK: - Undo (per ARCHITECTURE.md decision 9)

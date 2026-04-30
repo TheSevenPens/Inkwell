@@ -509,6 +509,94 @@ final class Canvas {
         return mutableData as Data
     }
 
+    /// Flatten the canvas onto an opaque background and encode as JPEG.
+    /// `backgroundColor` defaults to white. `quality` is in 0…1.
+    func encodeJPEGData(
+        backgroundColor: (r: CGFloat, g: CGFloat, b: CGFloat) = (1, 1, 1),
+        quality: CGFloat = 0.9
+    ) throws -> Data {
+        guard let composite = flattenToCGImage() else {
+            throw CanvasError.flattenFailed
+        }
+        let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+        let info = CGImageAlphaInfo.noneSkipLast.rawValue
+        guard let ctx = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: cs,
+            bitmapInfo: info
+        ) else {
+            throw CanvasError.flattenFailed
+        }
+        ctx.setFillColor(
+            red: backgroundColor.r,
+            green: backgroundColor.g,
+            blue: backgroundColor.b,
+            alpha: 1
+        )
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        ctx.draw(composite, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let opaque = ctx.makeImage() else {
+            throw CanvasError.flattenFailed
+        }
+        let mutableData = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(
+            mutableData,
+            UTType.jpeg.identifier as CFString,
+            1,
+            nil
+        ) else {
+            throw CanvasError.encoderCreateFailed
+        }
+        let opts: [CFString: Any] = [
+            kCGImageDestinationLossyCompressionQuality: quality
+        ]
+        CGImageDestinationAddImage(dest, opaque, opts as CFDictionary)
+        if !CGImageDestinationFinalize(dest) {
+            throw CanvasError.encoderFinalizeFailed
+        }
+        return mutableData as Data
+    }
+
+    /// Encode the canvas as a flat 8-bit PSD via `PSDFormat.encodeFlat`.
+    /// Pass 1: no layer hierarchy preserved — composite only.
+    func encodePSDData() throws -> Data {
+        guard let composite = flattenToCGImage() else {
+            throw CanvasError.flattenFailed
+        }
+        // Render to a freshly-allocated CGContext so we can read out the bytes
+        // in the exact format we want (RGBA8, premultiplied, top-down rows).
+        let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+        let info = CGImageAlphaInfo.premultipliedLast.rawValue
+        let bytesPerRow = width * 4
+        guard let ctx = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: cs,
+            bitmapInfo: info
+        ) else {
+            throw CanvasError.flattenFailed
+        }
+        ctx.draw(composite, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let raw = ctx.data else { throw CanvasError.flattenFailed }
+        let count = width * height * 4
+        var bytes = [UInt8](repeating: 0, count: count)
+        _ = bytes.withUnsafeMutableBufferPointer { buf in
+            memcpy(buf.baseAddress!, raw, count)
+        }
+        return try PSDFormat.encodeFlat(
+            width: width,
+            height: height,
+            premultipliedRGBA: bytes
+        )
+    }
+
     /// Load a PNG into a single new bitmap layer, replacing the current tree.
     /// Phase 5 will introduce native bundle save/load that round-trips the full tree.
     func loadPNG(from data: Data) throws {

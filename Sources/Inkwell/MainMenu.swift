@@ -113,6 +113,27 @@ func installMainMenu() {
         keyEquivalent: "s"
     )
     saveAs.keyEquivalentModifierMask = [.command, .shift]
+
+    fileMenu.addItem(.separator())
+    let exportItem = fileMenu.addItem(withTitle: "Export", action: nil, keyEquivalent: "")
+    let exportMenu = NSMenu(title: "Export")
+    exportItem.submenu = exportMenu
+    exportMenu.addItem(
+        withTitle: "PNG\u{2026}",
+        action: #selector(Document.exportAsPNG(_:)),
+        keyEquivalent: ""
+    )
+    exportMenu.addItem(
+        withTitle: "JPEG\u{2026}",
+        action: #selector(Document.exportAsJPEG(_:)),
+        keyEquivalent: ""
+    )
+    exportMenu.addItem(
+        withTitle: "PSD\u{2026}",
+        action: #selector(Document.exportAsPSD(_:)),
+        keyEquivalent: ""
+    )
+
     fileItem.submenu = fileMenu
     mainMenu.addItem(fileItem)
 
