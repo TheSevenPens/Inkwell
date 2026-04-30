@@ -96,7 +96,7 @@ Pick **Rectangle**, **Ellipse**, or **Lasso** under the **Selection** section in
 ## View and navigation
 
 - **Pan**: two-finger trackpad scroll, **Space + drag**, or the persistent **Hand** tool (left sidebar, "Navigate" section).
-- **Zoom**: pinch on trackpad (cursor-anchored), Cmd + scroll (cursor-anchored), Cmd + plus / minus.
+- **Zoom**: pinch on trackpad (cursor-anchored), **mouse wheel** (cursor-anchored, each notch ≈ 10%), Cmd + trackpad-scroll (cursor-anchored), Cmd + plus / minus.
 - **View → Fit Window** (Cmd+0), **View → Actual Size** (Cmd+1).
 - **Rotate**: two-finger trackpad rotate gesture (cursor-anchored), **R + drag** (anchored at view center), **Shift** during R+drag snaps to 15°, **Shift+R** resets rotation.
 - **Mid-stroke navigation**: zoom / pan / rotate during a brush stroke without ending it.

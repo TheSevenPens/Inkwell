@@ -865,12 +865,21 @@ final class CanvasView: MTKView {
 
     override func scrollWheel(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
-        if event.modifierFlags.contains(.command) {
-            let factor: CGFloat = 1.0 + event.scrollingDeltaY * 0.01
-            viewTransform.zoom(by: factor, at: p)
+        // hasPreciseScrollingDeltas is true for trackpads / Magic Mouse continuous
+        // scrolling; false for traditional mouse wheels with discrete notches.
+        if event.hasPreciseScrollingDeltas {
+            // Trackpad: pan by default, zoom with Cmd+scroll (cursor-anchored).
+            if event.modifierFlags.contains(.command) {
+                let factor: CGFloat = 1.0 + event.scrollingDeltaY * 0.01
+                viewTransform.zoom(by: factor, at: p)
+            } else {
+                viewTransform.offset.x += event.scrollingDeltaX
+                viewTransform.offset.y += event.scrollingDeltaY
+            }
         } else {
-            viewTransform.offset.x += event.scrollingDeltaX
-            viewTransform.offset.y += event.scrollingDeltaY
+            // Mouse wheel: zoom by default (cursor-anchored). Each notch ≈ 10%.
+            let factor: CGFloat = 1.0 + event.scrollingDeltaY * 0.10
+            viewTransform.zoom(by: factor, at: p)
         }
         needsDisplay = true
     }
