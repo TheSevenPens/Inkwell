@@ -12,3 +12,6 @@ build/
 .swiftpm/
 Package.resolved
 *.xcodeproj/
+
+# Claude Code local settings (per-machine permissions, not project state)
+.claude/
