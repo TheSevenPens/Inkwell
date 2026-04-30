@@ -219,5 +219,37 @@ func installMainMenu() {
     viewItem.submenu = viewMenu
     mainMenu.addItem(viewItem)
 
+    // Debug menu
+    let debugItem = NSMenuItem()
+    let debugMenu = NSMenu(title: "Debug")
+    let debugToolbarItem = debugMenu.addItem(
+        withTitle: "Show Debug Toolbar",
+        action: #selector(DebugMenuTarget.toggleDebugToolbar(_:)),
+        keyEquivalent: ""
+    )
+    debugToolbarItem.target = DebugMenuTarget.shared
+    debugToolbarItem.state = DebugBarController.shared.isVisible ? .on : .off
+    DebugMenuTarget.shared.toolbarMenuItem = debugToolbarItem
+    debugItem.submenu = debugMenu
+    mainMenu.addItem(debugItem)
+
     NSApp.mainMenu = mainMenu
+}
+
+/// Owner of the Debug menu's actions; keeps a reference so menu item state
+/// can be flipped on/off as the controller changes.
+final class DebugMenuTarget: NSObject {
+    static let shared = DebugMenuTarget()
+    weak var toolbarMenuItem: NSMenuItem?
+
+    override init() {
+        super.init()
+        DebugBarController.shared.addObserver { [weak self] in
+            self?.toolbarMenuItem?.state = DebugBarController.shared.isVisible ? .on : .off
+        }
+    }
+
+    @objc func toggleDebugToolbar(_ sender: NSMenuItem) {
+        DebugBarController.shared.toggleVisibility()
+    }
 }

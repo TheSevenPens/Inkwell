@@ -38,6 +38,15 @@ final class CanvasView: MTKView {
     private var airbrushTimer: Timer?
     private var antsTimer: Timer?
 
+    // Debug telemetry — populated from every input event the canvas sees.
+    private var debugLastSource: DebugSnapshot.Source = .none
+    private var debugLastCanvasPos: CGPoint?
+    private var debugLastPressure: CGFloat = 0
+    private var debugLastTiltX: CGFloat = 0
+    private var debugLastTiltY: CGFloat = 0
+    /// Sliding window of timestamps of the last 1 s of tablet-subtype events.
+    private var debugTabletTimestamps: [TimeInterval] = []
+
     private var viewTransform = ViewTransform()
     private var hasFitOnce = false
 
@@ -66,6 +75,25 @@ final class CanvasView: MTKView {
         var documentSize: (width: Int, height: Int)
         /// View rotation in degrees (CCW positive). 0 if no rotation applied.
         var rotationDegrees: Int
+    }
+
+    /// Snapshot of the latest input event for the debug toolbar. Updated on
+    /// every mouse / tablet event the canvas sees.
+    struct DebugSnapshot {
+        enum Source: String {
+            case stylus = "Stylus"
+            case mouse = "Mouse"
+            case none = "—"
+        }
+        var lastEventSource: Source
+        var lastEventCanvasPos: CGPoint?
+        var lastEventPressure: CGFloat
+        var lastEventTiltX: CGFloat
+        var lastEventTiltY: CGFloat
+        var lastEventAzimuthDegrees: CGFloat
+        var lastEventAltitudeDegrees: CGFloat
+        /// Number of tablet (`subtype == .tabletPoint`) events received in the last 1 s.
+        var tabletReportsPerSecond: Int
     }
 
     init(document: Document) {
@@ -234,6 +262,76 @@ final class CanvasView: MTKView {
         return viewTransform.windowToCanvas(local)
     }
 
+    // MARK: - Debug telemetry
+
+    /// Capture stylus / mouse parameters from any input event for the debug
+    /// toolbar. Counts tablet-subtype events over a 1 s sliding window.
+    private func recordEventForDebug(_ event: NSEvent) {
+        let local = convert(event.locationInWindow, from: nil)
+        debugLastCanvasPos = viewTransform.windowToCanvas(local)
+        debugLastPressure = CGFloat(event.pressure)
+        let isTabletPoint = (event.type == .tabletPoint || event.subtype == .tabletPoint)
+        if isTabletPoint {
+            debugLastSource = .stylus
+            debugLastTiltX = CGFloat(event.tilt.x)
+            debugLastTiltY = CGFloat(event.tilt.y)
+            let now = Date().timeIntervalSinceReferenceDate
+            debugTabletTimestamps.append(now)
+            let cutoff = now - 1.0
+            while let first = debugTabletTimestamps.first, first < cutoff {
+                debugTabletTimestamps.removeFirst()
+            }
+        } else {
+            debugLastSource = .mouse
+            debugLastTiltX = 0
+            debugLastTiltY = 0
+        }
+    }
+
+    /// Compute a fresh debug snapshot for the toolbar. Cheap; called at ~10 Hz
+    /// by `DebugBarView`'s refresh timer.
+    func currentDebugSnapshot() -> DebugSnapshot {
+        let tx = debugLastTiltX
+        let ty = debugLastTiltY
+        let azimuthRad = atan2(ty, tx)
+        var azimuthDeg = azimuthRad * 180.0 / .pi
+        if azimuthDeg < 0 { azimuthDeg += 360 }
+        let mag = min(1.0, hypot(tx, ty))
+        // Approximate: tilt magnitude ≈ sin(angle from vertical).
+        let altitudeDeg = 90.0 - asin(mag) * 180.0 / .pi
+        // Trim stale timestamps before reading the count.
+        let now = Date().timeIntervalSinceReferenceDate
+        let cutoff = now - 1.0
+        while let first = debugTabletTimestamps.first, first < cutoff {
+            debugTabletTimestamps.removeFirst()
+        }
+        return DebugSnapshot(
+            lastEventSource: debugLastSource,
+            lastEventCanvasPos: debugLastCanvasPos,
+            lastEventPressure: debugLastPressure,
+            lastEventTiltX: tx,
+            lastEventTiltY: ty,
+            lastEventAzimuthDegrees: azimuthDeg,
+            lastEventAltitudeDegrees: altitudeDeg,
+            tabletReportsPerSecond: debugTabletTimestamps.count
+        )
+    }
+
+    /// High-frequency tablet sample event. macOS may deliver these alongside
+    /// (or interleaved with) mouseDragged when mouse coalescing is disabled.
+    /// Tracking them here ensures the debug rate counter sees every report,
+    /// and the painting path can use them to fill in between mouseDragged events.
+    override func tabletPoint(with event: NSEvent) {
+        recordEventForDebug(event)
+        // If a stroke is in flight, feed this sample to the emitter so we don't
+        // lose intermediate tablet reports between mouseDragged events.
+        if let emitter = emitter {
+            let sample = sampleFor(event: event)
+            lastSample = sample
+            emitter.continueTo(sample)
+        }
+    }
+
     private func publishStatus(cursorWindow: CGPoint?) {
         let zoomPct = Int((viewTransform.scale * 100.0).rounded())
         let degrees = Int((viewTransform.rotation * 180.0 / .pi).rounded())
@@ -302,6 +400,7 @@ final class CanvasView: MTKView {
     // MARK: - Mouse / stylus dispatch
 
     override func mouseDown(with event: NSEvent) {
+        recordEventForDebug(event)
         if spaceHeld { beginPan(with: event); return }
         if rHeld { beginRotateDrag(with: event); return }
         switch ToolState.shared.tool {
@@ -333,6 +432,7 @@ final class CanvasView: MTKView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        recordEventForDebug(event)
         if isPanning { continuePan(with: event); return }
         if isRotateDragging { continueRotateDrag(with: event); return }
         switch ToolState.shared.tool {
@@ -348,6 +448,7 @@ final class CanvasView: MTKView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        recordEventForDebug(event)
         if isPanning { endPan(with: event); return }
         if isRotateDragging { endRotateDrag(with: event); return }
         switch ToolState.shared.tool {
@@ -645,6 +746,7 @@ final class CanvasView: MTKView {
     // MARK: - Mouse-moved / entered / exited
 
     override func mouseMoved(with event: NSEvent) {
+        recordEventForDebug(event)
         if ToolState.shared.tool == .brush {
             lastSample = sampleFor(event: event)
         }
