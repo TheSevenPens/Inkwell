@@ -147,6 +147,26 @@ final class VectorLayer: LayerNode, CompositableLayer {
         return ribbonRenderer.renderStroke(stroke, into: self)
     }
 
+    /// Translate every stroke by `(dx, dy)` in canvas pixels and rebuild the
+    /// tile cache. Used by the Move Layer tool. No-op for zero deltas.
+    func translateStrokes(dx: CGFloat, dy: CGFloat, ribbonRenderer: StrokeRibbonRenderer) {
+        if dx == 0 && dy == 0 { return }
+        let translated = strokes.map { stroke -> VectorStroke in
+            let movedSamples = stroke.samples.map {
+                VectorStrokeSample(x: $0.x + dx, y: $0.y + dy, pressure: $0.pressure)
+            }
+            return VectorStroke(
+                kind: stroke.kind,
+                color: stroke.color,
+                opacity: stroke.opacity,
+                maxRadius: stroke.maxRadius,
+                minRadius: stroke.minRadius,
+                samples: movedSamples
+            )
+        }
+        setStrokes(translated, ribbonRenderer: ribbonRenderer)
+    }
+
     /// Replace the entire stroke list and rebuild the tile cache from scratch.
     func setStrokes(_ newStrokes: [VectorStroke], ribbonRenderer: StrokeRibbonRenderer) {
         strokes = newStrokes

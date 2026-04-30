@@ -19,6 +19,8 @@ final class LayerPanelView: NSView {
     private var editTargetControl: NSSegmentedControl!
     private var addMaskButton: NSButton!
     private var removeMaskButton: NSButton!
+    private var bgColorWell: NSColorWell!
+    private var bgColorRow: NSStackView!
 
     private var refreshing = false
     private var section: CollapsibleSection!
@@ -107,6 +109,28 @@ final class LayerPanelView: NSView {
         blendRow.addArrangedSubview(blendPopup)
         blendLabel.widthAnchor.constraint(equalToConstant: 60).isActive = true
 
+        // Background-color row. Visible only when the active layer is a
+        // BackgroundLayer; hidden otherwise. The NSStackView excludes
+        // hidden arranged subviews from layout, so the panel collapses
+        // around it when not applicable.
+        bgColorRow = NSStackView()
+        bgColorRow.orientation = .horizontal
+        bgColorRow.spacing = 6
+        let bgLabel = NSTextField(labelWithString: "Color")
+        bgLabel.font = .systemFont(ofSize: 11)
+        bgLabel.textColor = .secondaryLabelColor
+        bgColorWell = NSColorWell(frame: NSRect(x: 0, y: 0, width: 36, height: 22))
+        bgColorWell.target = self
+        bgColorWell.action = #selector(bgColorChanged(_:))
+        bgLabel.translatesAutoresizingMaskIntoConstraints = false
+        bgColorWell.translatesAutoresizingMaskIntoConstraints = false
+        bgLabel.widthAnchor.constraint(equalToConstant: 60).isActive = true
+        bgColorWell.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        bgColorWell.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        bgColorRow.addArrangedSubview(bgLabel)
+        bgColorRow.addArrangedSubview(bgColorWell)
+        bgColorRow.isHidden = true
+
         // Outline
         outline = NSOutlineView()
         outline.headerView = nil
@@ -133,16 +157,33 @@ final class LayerPanelView: NSView {
         scrollView.borderType = .noBorder
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
-        // Bottom toolbars (two rows)
+        // Bottom toolbars (two rows). The four "add layer kind" buttons are
+        // collapsed into a single pull-down so the toolbar stays compact and
+        // future layer kinds are a single new menu item, not a new button.
         let layerToolbar = NSStackView()
         layerToolbar.orientation = .horizontal
         layerToolbar.spacing = 4
-        let newLayerBtn = NSButton(title: "+ Layer", target: self, action: #selector(newLayer(_:)))
-        let newVectorBtn = NSButton(title: "+ Vector", target: self, action: #selector(newVectorLayer(_:)))
-        let newGroupBtn = NSButton(title: "+ Group", target: self, action: #selector(newGroup(_:)))
+        let addPopup = NSPopUpButton(frame: .zero, pullsDown: true)
+        addPopup.bezelStyle = .roundRect
+        addPopup.controlSize = .small
+        // First item of a pull-down is the always-visible title; the menu
+        // entries that follow are the actual actions.
+        addPopup.addItem(withTitle: "+")
+        let addItems: [(String, Selector)] = [
+            ("Layer", #selector(newLayer(_:))),
+            ("Vector Layer", #selector(newVectorLayer(_:))),
+            ("Background Layer", #selector(newBackgroundLayer(_:))),
+            ("Group", #selector(newGroup(_:)))
+        ]
+        for (title, action) in addItems {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            addPopup.menu?.addItem(item)
+        }
         let dupBtn = NSButton(title: "Dup", target: self, action: #selector(duplicateLayer(_:)))
         let delBtn = NSButton(title: "Del", target: self, action: #selector(deleteLayer(_:)))
-        for b in [newLayerBtn, newVectorBtn, newGroupBtn, dupBtn, delBtn] {
+        layerToolbar.addArrangedSubview(addPopup)
+        for b in [dupBtn, delBtn] {
             b.bezelStyle = .roundRect
             b.controlSize = .small
             layerToolbar.addArrangedSubview(b)
@@ -171,6 +212,7 @@ final class LayerPanelView: NSView {
         section.add(editRow, to: master)
         section.add(opacityRow, to: master)
         section.add(blendRow, to: master)
+        section.add(bgColorRow, to: master)
         section.add(scrollView, to: master)
         section.add(maskToolbar, to: master)
         master.setCustomSpacing(8, after: layerToolbar)
@@ -216,6 +258,18 @@ final class LayerPanelView: NSView {
         editTargetControl.selectedSegment = canvas.editingMask ? 1 : 0
         addMaskButton.isEnabled = activeBitmap != nil && !hasMask
         removeMaskButton.isEnabled = hasMask
+        // Background-color row visibility + value.
+        if let bg = canvas.activeLayer as? BackgroundLayer {
+            bgColorRow.isHidden = false
+            bgColorWell.color = NSColor(
+                srgbRed: bg.color.r,
+                green: bg.color.g,
+                blue: bg.color.b,
+                alpha: bg.color.a
+            )
+        } else {
+            bgColorRow.isHidden = true
+        }
     }
 
     @objc private func opacityChanged(_ sender: NSSlider) {
@@ -237,7 +291,21 @@ final class LayerPanelView: NSView {
 
     @objc private func newLayer(_ sender: Any?) { canvas?.addNewBitmapLayer() }
     @objc private func newVectorLayer(_ sender: Any?) { canvas?.addNewVectorLayer() }
+    @objc private func newBackgroundLayer(_ sender: Any?) { canvas?.addNewBackgroundLayer() }
     @objc private func newGroup(_ sender: Any?) { canvas?.addNewGroup() }
+
+    @objc private func bgColorChanged(_ sender: NSColorWell) {
+        guard !refreshing, let canvas,
+              let bg = canvas.activeLayer as? BackgroundLayer else { return }
+        let ns = sender.color.usingColorSpace(.sRGB) ?? sender.color
+        bg.color = ColorRGBA(
+            r: ns.redComponent,
+            g: ns.greenComponent,
+            b: ns.blueComponent,
+            a: 1
+        )
+        canvas.notifyChanged()
+    }
 
     @objc private func duplicateLayer(_ sender: Any?) {
         guard let canvas, let id = canvas.activeLayerId else { return }

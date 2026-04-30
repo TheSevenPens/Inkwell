@@ -6,6 +6,7 @@ final class ToolState {
     enum Tool: Equatable {
         case brush
         case hand
+        case moveLayer
         case selectRectangle
         case selectEllipse
         case selectLasso

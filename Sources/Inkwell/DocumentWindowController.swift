@@ -7,31 +7,71 @@ private final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
+/// 4 pt-wide vertical strip that the user drags horizontally. Calls
+/// `onDrag` with the per-event delta-x in window points each time the
+/// mouse moves while the button is held down. Shows the resize-left-right
+/// cursor on hover.
+private final class HorizontalDragHandle: NSView {
+    var onDrag: ((CGFloat) -> Void)?
+    private var dragStartX: CGFloat = 0
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.separatorColor.cgColor
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: NSCursor.resizeLeftRight)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        dragStartX = event.locationInWindow.x
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        let x = event.locationInWindow.x
+        let dx = x - dragStartX
+        dragStartX = x
+        if dx != 0 { onDrag?(dx) }
+    }
+}
+
 final class DocumentWindowController: NSWindowController {
-    private weak var brushPicker: NSView?
-    private weak var rightHost: NSView?
+    private weak var leftPane: NSView?
+    private weak var rightPane: NSView?
     private weak var debugBar: DebugBarView?
     private weak var canvasView: CanvasView?
     private var debugBarHeightConstraint: NSLayoutConstraint?
+    private var leftPaneWidthConstraint: NSLayoutConstraint?
     private var panelsHidden: Bool = false
+
+    private static let leftPaneWidthKey = "Inkwell.LeftPaneWidth"
+    /// Bounds for the left-pane width drag. Min fits 1 column with insets;
+    /// max is generous enough for a 6+ column flow grid.
+    private static let leftPaneMinWidth: CGFloat = 56
+    private static let leftPaneMaxWidth: CGFloat = 320
 
     init(document: Document) {
         let canvasView = CanvasView(document: document)
-        let brushPickerInner = BrushPickerView()
-        brushPickerInner.translatesAutoresizingMaskIntoConstraints = false
-        // Wrap the brush picker in a vertical scroll view so the window can
-        // shrink below the picker's intrinsic ~410 pt minimum (e.g. macOS
+        let leftPaneInner = LeftPaneView()
+        leftPaneInner.translatesAutoresizingMaskIntoConstraints = false
+        // Wrap the left pane in a vertical scroll view so the window can
+        // shrink below the pane's intrinsic content height (e.g. macOS
         // Window → Move & Resize → Top on a 13" display).
-        let brushPicker = NSScrollView()
-        brushPicker.translatesAutoresizingMaskIntoConstraints = false
-        brushPicker.hasVerticalScroller = true
-        brushPicker.hasHorizontalScroller = false
-        brushPicker.autohidesScrollers = true
-        brushPicker.borderType = .noBorder
-        brushPicker.drawsBackground = false
-        brushPicker.documentView = brushPickerInner
-        brushPickerInner.widthAnchor.constraint(equalTo: brushPicker.contentView.widthAnchor).isActive = true
-        brushPickerInner.topAnchor.constraint(equalTo: brushPicker.contentView.topAnchor).isActive = true
+        let leftPane = NSScrollView()
+        leftPane.translatesAutoresizingMaskIntoConstraints = false
+        leftPane.hasVerticalScroller = true
+        leftPane.hasHorizontalScroller = false
+        leftPane.autohidesScrollers = true
+        leftPane.borderType = .noBorder
+        leftPane.drawsBackground = false
+        leftPane.documentView = leftPaneInner
+        leftPaneInner.widthAnchor.constraint(equalTo: leftPane.contentView.widthAnchor).isActive = true
+        leftPaneInner.topAnchor.constraint(equalTo: leftPane.contentView.topAnchor).isActive = true
         let inspector = BrushInspectorView()
         let layerPanel = LayerPanelView()
         layerPanel.attach(canvas: document.canvas)
@@ -51,7 +91,7 @@ final class DocumentWindowController: NSWindowController {
                 )
         }
 
-        // Right sidebar. Wrapped in an NSScrollView so the brush inspector +
+        // Right pane. Wrapped in an NSScrollView so the brush inspector +
         // layer panel can stay at their intrinsic content height while the
         // window itself shrinks freely (e.g. macOS Window → Move & Resize →
         // Top, which tiles the window to half-screen height). Without the
@@ -75,21 +115,21 @@ final class DocumentWindowController: NSWindowController {
             layerPanel.bottomAnchor.constraint(equalTo: rightContent.bottomAnchor)
         ])
 
-        let rightHost = NSScrollView()
-        rightHost.translatesAutoresizingMaskIntoConstraints = false
-        rightHost.hasVerticalScroller = true
-        rightHost.hasHorizontalScroller = false
-        rightHost.autohidesScrollers = true
-        rightHost.borderType = .noBorder
-        rightHost.drawsBackground = true
-        rightHost.backgroundColor = .windowBackgroundColor
-        rightHost.documentView = rightContent
+        let rightPane = NSScrollView()
+        rightPane.translatesAutoresizingMaskIntoConstraints = false
+        rightPane.hasVerticalScroller = true
+        rightPane.hasHorizontalScroller = false
+        rightPane.autohidesScrollers = true
+        rightPane.borderType = .noBorder
+        rightPane.drawsBackground = true
+        rightPane.backgroundColor = .windowBackgroundColor
+        rightPane.documentView = rightContent
         // Pin the document view's width and top to the scroll view's content
         // view so there's no horizontal scroll and the document view's frame
         // is unambiguous (translatesAutoresizingMaskIntoConstraints=false
         // disables NSScrollView's automatic sizing).
-        rightContent.widthAnchor.constraint(equalTo: rightHost.contentView.widthAnchor).isActive = true
-        rightContent.topAnchor.constraint(equalTo: rightHost.contentView.topAnchor).isActive = true
+        rightContent.widthAnchor.constraint(equalTo: rightPane.contentView.widthAnchor).isActive = true
+        rightContent.topAnchor.constraint(equalTo: rightPane.contentView.topAnchor).isActive = true
 
         // Canvas area: debug bar (optional, top) + canvas (flex) + status bar (bottom).
         let canvasArea = NSView()
@@ -123,12 +163,27 @@ final class DocumentWindowController: NSWindowController {
         container.distribution = .fill
         container.alignment = .top
         container.translatesAutoresizingMaskIntoConstraints = false
-        container.addArrangedSubview(brushPicker)
+        // Drag handle sits between the left pane and the canvas — drag it
+        // to resize the left pane. The Tools grid inside the pane reflows
+        // its column count to match the new width.
+        let leftDragHandle = HorizontalDragHandle()
+        leftDragHandle.translatesAutoresizingMaskIntoConstraints = false
+        container.addArrangedSubview(leftPane)
+        container.addArrangedSubview(leftDragHandle)
         container.addArrangedSubview(canvasArea)
-        container.addArrangedSubview(rightHost)
-        brushPicker.translatesAutoresizingMaskIntoConstraints = false
-        brushPicker.widthAnchor.constraint(equalToConstant: 72).isActive = true
-        rightHost.widthAnchor.constraint(equalToConstant: 300).isActive = true
+        container.addArrangedSubview(rightPane)
+        leftPane.translatesAutoresizingMaskIntoConstraints = false
+        let initialLeftWidth: CGFloat = {
+            let saved = UserDefaults.standard.double(forKey: Self.leftPaneWidthKey)
+            if saved >= Double(Self.leftPaneMinWidth), saved <= Double(Self.leftPaneMaxWidth) {
+                return CGFloat(saved)
+            }
+            return 72
+        }()
+        let leftWidthConstraint = leftPane.widthAnchor.constraint(equalToConstant: initialLeftWidth)
+        leftWidthConstraint.isActive = true
+        leftDragHandle.widthAnchor.constraint(equalToConstant: 4).isActive = true
+        rightPane.widthAnchor.constraint(equalToConstant: 300).isActive = true
         canvasArea.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         // Clamp default content size to the visible screen so the window
@@ -156,12 +211,14 @@ final class DocumentWindowController: NSWindowController {
             container.leadingAnchor.constraint(equalTo: host.leadingAnchor),
             container.trailingAnchor.constraint(equalTo: host.trailingAnchor),
             container.bottomAnchor.constraint(equalTo: host.bottomAnchor),
-            brushPicker.topAnchor.constraint(equalTo: container.topAnchor),
-            brushPicker.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            leftPane.topAnchor.constraint(equalTo: container.topAnchor),
+            leftPane.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            leftDragHandle.topAnchor.constraint(equalTo: container.topAnchor),
+            leftDragHandle.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             canvasArea.topAnchor.constraint(equalTo: container.topAnchor),
             canvasArea.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            rightHost.topAnchor.constraint(equalTo: container.topAnchor),
-            rightHost.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+            rightPane.topAnchor.constraint(equalTo: container.topAnchor),
+            rightPane.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
         window.contentView = host
         window.title = "Untitled"
@@ -180,11 +237,15 @@ final class DocumentWindowController: NSWindowController {
             window.center()
         }
         super.init(window: window)
-        self.brushPicker = brushPicker
-        self.rightHost = rightHost
+        self.leftPane = leftPane
+        self.rightPane = rightPane
         self.debugBar = debugBar
         self.canvasView = canvasView
         self.debugBarHeightConstraint = debugHeight
+        self.leftPaneWidthConstraint = leftWidthConstraint
+        leftDragHandle.onDrag = { [weak self] dx in
+            self?.adjustLeftPaneWidth(by: dx)
+        }
         canvasView.onTogglePanels = { [weak self] in self?.togglePanels() }
         canvasView.onStatusChanged = { [weak statusBar] snapshot in
             statusBar?.update(snapshot: snapshot)
@@ -198,10 +259,22 @@ final class DocumentWindowController: NSWindowController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("Not supported") }
 
+    /// Mutate the left-pane width constraint by `delta` (clamped to
+    /// [`leftPaneMinWidth`, `leftPaneMaxWidth`]) and persist the result so
+    /// the next launch opens at the same size. Called from the drag
+    /// handle's `onDrag` callback.
+    private func adjustLeftPaneWidth(by delta: CGFloat) {
+        guard let c = leftPaneWidthConstraint else { return }
+        let newWidth = max(Self.leftPaneMinWidth, min(Self.leftPaneMaxWidth, c.constant + delta))
+        guard newWidth != c.constant else { return }
+        c.constant = newWidth
+        UserDefaults.standard.set(Double(newWidth), forKey: Self.leftPaneWidthKey)
+    }
+
     func togglePanels() {
         panelsHidden.toggle()
-        brushPicker?.isHidden = panelsHidden
-        rightHost?.isHidden = panelsHidden
+        leftPane?.isHidden = panelsHidden
+        rightPane?.isHidden = panelsHidden
     }
 
     private func applyDebugBarVisibility() {

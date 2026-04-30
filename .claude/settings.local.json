@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /Users/seven/Documents/GitHub/Inkwell add -A Sources/Inkwell/)",
+      "Bash(git -C /Users/seven/Documents/GitHub/Inkwell commit -m ' *)",
+      "Bash(git -C /Users/seven/Documents/GitHub/Inkwell push)",
+      "Bash(open /Users/seven/Documents/GitHub/Inkwell/build/Inkwell.app)",
+      "Bash(git -C /Users/seven/Documents/GitHub/Inkwell add Sources/Inkwell/)",
+      "Bash(git -C /Users/seven/Documents/GitHub/Inkwell add Sources/Inkwell/ docs/FILEFORMAT.md)",
+      "Bash(swift build *)",
+      "Bash(log show *)",
+      "Bash(osascript -e 'tell application \"Inkwell\" to quit')",
+      "Bash(pkill -x Inkwell)",
+      "Bash(git -C /Users/seven/Documents/GitHub/Inkwell status)",
+      "Bash(./scripts/build.sh)",
+      "Bash(git -C /Users/seven/Documents/GitHub/Inkwell add Resources/Info.plist Sources/Inkwell/ docs/USERMANUAL.md docs/PSD_FIDELITY.md)",
+      "Bash(git -C /Users/seven/Documents/GitHub/Inkwell log --oneline)",
+      "Bash(git -C /Users/seven/Documents/GitHub/Inkwell add Sources/Inkwell/CanvasView.swift docs/USERMANUAL.md)",
+      "Bash(/Users/seven/Documents/GitHub/Inkwell/scripts/build.sh)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(sed -i '' 's/rightHost/rightPane/g' /Users/seven/Documents/GitHub/Inkwell/Sources/Inkwell/DocumentWindowController.swift)",
+      "Bash(sed -i '' 's/right sidebar/right pane/g' /Users/seven/Documents/GitHub/Inkwell/docs/USERMANUAL.md)"
+    ]
+  }
+}

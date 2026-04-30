@@ -86,6 +86,17 @@ final class CanvasView: MTKView {
     private var rotateDragStartMouseAngle: CGFloat = 0
     private var rotateDragBaseRotation: CGFloat = 0
 
+    // Move Layer tool state. Drag translates the active layer's content
+    // relative to the canvas. While dragging, `moveOffsetCanvas` is applied
+    // at compositor level (no data mutation); on mouseUp the offset is
+    // baked into the layer (bitmap re-rasterized; vector strokes
+    // translated) and an undo step registers.
+    private var moveTargetId: UUID?
+    private var moveStartCanvasPoint: CGPoint = .zero
+    private var moveOffsetCanvas: CGPoint = .zero
+    private var moveBeforeBitmap: BitmapLayer.TileSnapshot = .empty
+    private var moveBeforeVectorStrokes: [VectorStroke] = []
+
     /// Set by DocumentWindowController; called when the user presses Tab.
     var onTogglePanels: (() -> Void)?
 
@@ -531,6 +542,8 @@ final class CanvasView: MTKView {
             }
         case .hand:
             beginPan(with: event)
+        case .moveLayer:
+            beginMoveLayer(with: event)
         case .selectRectangle:
             beginSelectionGesture(.rectangle(start: canvasPointForEvent(event),
                                              current: canvasPointForEvent(event),
@@ -568,6 +581,8 @@ final class CanvasView: MTKView {
             }
         case .hand:
             continuePan(with: event)
+        case .moveLayer:
+            continueMoveLayer(with: event)
         case .selectRectangle, .selectEllipse, .selectLasso:
             updateSelectionGesture(with: canvasPointForEvent(event))
         }
@@ -598,6 +613,8 @@ final class CanvasView: MTKView {
             }
         case .hand:
             endPan(with: event)
+        case .moveLayer:
+            endMoveLayer(with: event)
         case .selectRectangle, .selectEllipse, .selectLasso:
             updateSelectionGesture(with: canvasPointForEvent(event))
             commitSelectionGesture()
@@ -1181,6 +1198,79 @@ final class CanvasView: MTKView {
         cursorUpdate(with: event)
     }
 
+    // MARK: - Move Layer
+
+    private func beginMoveLayer(with event: NSEvent) {
+        guard let active = canvas.activeLayer else { return }
+        // Background layers are full-canvas solid colors — there's nothing
+        // to translate. Group layers aren't supported in V1 either.
+        guard active is BitmapLayer || active is VectorLayer else { return }
+        moveTargetId = active.id
+        moveStartCanvasPoint = canvasPointForEvent(event)
+        moveOffsetCanvas = .zero
+        if let bitmap = active as? BitmapLayer {
+            // Snapshot every existing tile so undo can restore the layer's
+            // pre-translation state. Tiles created by the translation are
+            // captured in the "after" snapshot at commit time.
+            let coords = Set(bitmap.allTileCoords())
+            moveBeforeBitmap = bitmap.snapshotTiles(coords)
+        } else if let vector = active as? VectorLayer {
+            moveBeforeVectorStrokes = vector.strokes
+        }
+        NSCursor.closedHand.set()
+    }
+
+    private func continueMoveLayer(with event: NSEvent) {
+        guard moveTargetId != nil else { return }
+        let p = canvasPointForEvent(event)
+        moveOffsetCanvas = CGPoint(
+            x: p.x - moveStartCanvasPoint.x,
+            y: p.y - moveStartCanvasPoint.y
+        )
+        needsDisplay = true
+    }
+
+    private func endMoveLayer(with event: NSEvent) {
+        defer {
+            moveTargetId = nil
+            moveOffsetCanvas = .zero
+            moveBeforeBitmap = .empty
+            moveBeforeVectorStrokes = []
+            cursorUpdate(with: event)
+            needsDisplay = true
+        }
+        guard let id = moveTargetId,
+              let active = canvas.findLayer(id) else { return }
+        let dxFloat = moveOffsetCanvas.x
+        let dyFloat = moveOffsetCanvas.y
+        if abs(dxFloat) < 0.5 && abs(dyFloat) < 0.5 { return }  // ignore micro-drags
+
+        if let bitmap = active as? BitmapLayer {
+            // Bake at integer pixel resolution to keep the result un-resampled.
+            let dx = Int(dxFloat.rounded())
+            let dy = Int(dyFloat.rounded())
+            if dx == 0 && dy == 0 { return }
+            bitmap.translatePixels(dx: dx, dy: dy)
+            // After-snapshot covers every tile that exists post-translation
+            // *plus* the original ones (so undo restores absent tiles too).
+            let after = bitmap.snapshotTiles(
+                Set(bitmap.allTileCoords()).union(moveBeforeBitmap.presentTiles.keys)
+            )
+            document?.registerLayerStrokeUndo(layerId: id, before: moveBeforeBitmap, after: after)
+            document?.updateChangeCount(.changeDone)
+        } else if let vector = active as? VectorLayer,
+                  let ribbonRenderer = canvas.ribbonRenderer {
+            vector.translateStrokes(dx: dxFloat, dy: dyFloat, ribbonRenderer: ribbonRenderer)
+            let after = vector.strokes
+            document?.registerVectorStrokeUndo(
+                layerId: id,
+                before: moveBeforeVectorStrokes,
+                after: after
+            )
+            document?.updateChangeCount(.changeDone)
+        }
+    }
+
     // MARK: - Rotate (R + drag)
 
     private func beginRotateDrag(with event: NSEvent) {
@@ -1326,11 +1416,38 @@ final class CanvasView: MTKView {
                 brushCursor().set()
             case .hand:
                 NSCursor.openHand.set()
+            case .moveLayer:
+                moveLayerCursor.set()
             case .selectRectangle, .selectEllipse, .selectLasso:
                 NSCursor.crosshair.set()
             }
         }
     }
+
+    /// Cursor for the Move Layer tool. Uses the same SF Symbol as the
+    /// toolbar icon so the affordance is unmistakably "drag the layer."
+    /// Built lazily once per canvas view since SF-Symbol-to-cursor is a
+    /// modest CGImage allocation.
+    private lazy var moveLayerCursor: NSCursor = {
+        let config = NSImage.SymbolConfiguration(pointSize: 18, weight: .regular)
+        let baseImage = NSImage(
+            systemSymbolName: "arrow.up.and.down.and.arrow.left.and.right",
+            accessibilityDescription: "Move Layer"
+        )?.withSymbolConfiguration(config) ?? NSImage()
+        let size = NSSize(width: 22, height: 22)
+        let image = NSImage(size: size, flipped: false) { rect in
+            // Faint white halo so the cursor stays legible on dark layers.
+            NSColor.white.withAlphaComponent(0.6).setStroke()
+            let halo = NSBezierPath()
+            halo.lineWidth = 2
+            halo.appendArc(withCenter: NSPoint(x: rect.midX, y: rect.midY),
+                           radius: rect.width / 2 - 1,
+                           startAngle: 0, endAngle: 360)
+            baseImage.draw(in: rect.insetBy(dx: 2, dy: 2))
+            return true
+        }
+        return NSCursor(image: image, hotSpot: NSPoint(x: size.width / 2, y: size.height / 2))
+    }()
 
     private func brushCursor() -> NSCursor {
         let brush = BrushPalette.shared.activeBrush
@@ -1373,10 +1490,15 @@ extension CanvasView: MTKViewDelegate {
             viewBoundsPt: boundsPt,
             viewDrawablePx: drawablePx
         )
+        var layerOffsets: [UUID: CGPoint] = [:]
+        if let id = moveTargetId, moveOffsetCanvas != .zero {
+            layerOffsets[id] = moveOffsetCanvas
+        }
         renderer.render(
             in: view,
             viewTransform: matrix,
-            visibleCanvasRect: visibleCanvasRect()
+            visibleCanvasRect: visibleCanvasRect(),
+            layerOffsets: layerOffsets
         )
         // Publish status every frame the canvas redraws — captures view transform
         // changes (zoom, pan, rotate, fit) without sprinkling publishStatus calls

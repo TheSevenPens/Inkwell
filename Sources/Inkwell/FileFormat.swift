@@ -38,6 +38,7 @@ enum LayerNodeData: Codable {
     case bitmap(BitmapLayerData)
     case group(GroupLayerData)
     case vector(VectorLayerData)
+    case background(BackgroundLayerData)
 
     private enum CodingKeys: String, CodingKey {
         case type, data
@@ -53,6 +54,8 @@ enum LayerNodeData: Codable {
             self = .group(try container.decode(GroupLayerData.self, forKey: .data))
         case "vector":
             self = .vector(try container.decode(VectorLayerData.self, forKey: .data))
+        case "background":
+            self = .background(try container.decode(BackgroundLayerData.self, forKey: .data))
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .type, in: container,
@@ -72,6 +75,9 @@ enum LayerNodeData: Codable {
             try container.encode(data, forKey: .data)
         case .vector(let data):
             try container.encode("vector", forKey: .type)
+            try container.encode(data, forKey: .data)
+        case .background(let data):
+            try container.encode("background", forKey: .type)
             try container.encode(data, forKey: .data)
         }
     }
@@ -99,6 +105,17 @@ struct GroupLayerData: Codable {
     var children: [LayerNodeData]
 }
 
+/// Background layer manifest record. No tile data; the layer is just a
+/// solid color filling the full canvas.
+struct BackgroundLayerData: Codable {
+    var id: String
+    var name: String
+    var visible: Bool
+    var opacity: Double
+    var blendMode: String
+    var color: ColorRGBA
+}
+
 /// Vector layer manifest record. Strokes are stored as JSON inline; the tile
 /// cache is *not* persisted (it's re-rasterized at load), so saved vector
 /// layers don't contribute records to `tiles.bin`.
@@ -119,7 +136,7 @@ extension Array where Element == LayerNodeData {
             switch node {
             case .bitmap:
                 out.append(node)
-            case .vector:
+            case .vector, .background:
                 continue
             case .group(let g):
                 out.append(contentsOf: g.children.recursiveBitmapData())
@@ -515,6 +532,16 @@ extension Canvas {
                 strokes: vector.strokes
             ))
         }
+        if let bg = node as? BackgroundLayer {
+            return .background(BackgroundLayerData(
+                id: bg.id.uuidString,
+                name: bg.name,
+                visible: bg.isVisible,
+                opacity: Double(bg.opacity),
+                blendMode: bg.blendMode.rawValue,
+                color: bg.color
+            ))
+        }
         if let group = node as? GroupLayer {
             return .group(GroupLayerData(
                 id: group.id.uuidString,
@@ -598,6 +625,16 @@ extension Canvas {
                 canvasWidth: width,
                 canvasHeight: height
             )
+            layer.isVisible = b.visible
+            layer.opacity = CGFloat(b.opacity)
+            layer.blendMode = LayerBlendMode(rawValue: b.blendMode) ?? .normal
+            idMap[id] = layer
+            return layer
+        case .background(let b):
+            guard let id = UUID(uuidString: b.id) else {
+                throw FileFormatError.invalidFile("Bad UUID: \(b.id)")
+            }
+            let layer = BackgroundLayer(id: id, name: b.name, color: b.color)
             layer.isVisible = b.visible
             layer.opacity = CGFloat(b.opacity)
             layer.blendMode = LayerBlendMode(rawValue: b.blendMode) ?? .normal

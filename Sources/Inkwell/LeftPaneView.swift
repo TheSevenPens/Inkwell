@@ -1,9 +1,18 @@
 import AppKit
 
-final class BrushPickerView: NSView {
+/// The application's left pane. A vertical column of collapsible sections —
+/// today **Tools** (a flow-grid of brush, selection, deselect, and hand
+/// icons) and **Color Palette** (HSV ring + SV square). Width is
+/// user-resizable via the drag handle on its right edge; the Tools grid
+/// reflows to multiple columns as the pane widens. Generic name so future
+/// palettes / sections can land here without another rename.
+final class LeftPaneView: NSView {
     private var stack: NSStackView!
     private var brushButtons: [NSButton] = []
     private var toolButtons: [(button: NSButton, tool: ToolState.Tool)] = []
+    private var section: CollapsibleSection!
+    private var colorSection: Section?
+    private var colorWheel: ColorWheelView?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -12,16 +21,21 @@ final class BrushPickerView: NSView {
         buildLayout()
         BrushPalette.shared.addObserver { [weak self] in
             self?.refreshSelection()
+            self?.refreshColorWheel()
         }
         ToolState.shared.addObserver { [weak self] in
             self?.refreshSelection()
         }
     }
 
+    private func refreshColorWheel() {
+        colorWheel?.setColor(BrushPalette.shared.activeBrush.color)
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    /// Flip the picker's coordinate system so when it's used as the document
+    /// Flip the pane's coordinate system so when it's used as the document
     /// view of an NSScrollView, content anchors to the visual top of the
     /// clip view rather than the bottom.
     override var isFlipped: Bool { true }
@@ -31,7 +45,11 @@ final class BrushPickerView: NSView {
         stack.orientation = .vertical
         stack.spacing = 6
         stack.edgeInsets = NSEdgeInsets(top: 16, left: 8, bottom: 16, right: 8)
-        stack.alignment = .centerX
+        // Leading alignment so the section header sits flush with the pane's
+        // left edge (matches Brush Settings / Layers on the right). The grid
+        // body is pinned to leading/trailing of the pane via explicit
+        // constraints below, so it spans the full width regardless.
+        stack.alignment = .leading
         stack.distribution = .fill
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
@@ -42,8 +60,21 @@ final class BrushPickerView: NSView {
             stack.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
 
-        stack.addArrangedSubview(sectionLabel("Brushes"))
+        // Single "Tools" section holding every currently-shipped tool —
+        // brushes, selection shapes, the deselect action, and the hand.
+        // Future palettes / tools can live in their own sections below.
+        // Collapsible via the standard disclosure-triangle header so the
+        // user can hide all tools and free up vertical space when the left
+        // pane is wide.
+        section = CollapsibleSection(title: "Tools")
+        stack.addArrangedSubview(section.header)
 
+        // Build all the buttons in display order, then drop them into the
+        // flow-grid. The grid reflows to multiple columns when the user
+        // widens the left pane.
+        var allButtons: [NSView] = []
+
+        // Brushes: G-Pen, Marker, Airbrush, Eraser.
         for (idx, brush) in BrushPalette.shared.brushes.enumerated() {
             let button = makeIconButton(
                 symbolName: Self.symbolName(for: brush),
@@ -51,13 +82,11 @@ final class BrushPickerView: NSView {
                 action: #selector(brushButtonClicked(_:))
             )
             button.tag = idx
-            stack.addArrangedSubview(button)
             brushButtons.append(button)
+            allButtons.append(button)
         }
 
-        stack.addArrangedSubview(spacer(height: 8))
-        stack.addArrangedSubview(sectionLabel("Selection"))
-
+        // Selection shapes: Rectangle, Ellipse, Lasso.
         let selectionDefs: [(symbol: String, tool: ToolState.Tool, name: String)] = [
             ("rectangle.dashed", .selectRectangle, "Rectangle Selection"),
             ("circle.dashed", .selectEllipse, "Ellipse Selection"),
@@ -69,8 +98,8 @@ final class BrushPickerView: NSView {
                 tooltip: def.name,
                 action: #selector(toolButtonClicked(_:))
             )
-            stack.addArrangedSubview(button)
             toolButtons.append((button: button, tool: def.tool))
+            allButtons.append(button)
         }
 
         // Deselect: an *action* button (not a tool toggle). Dispatched up the
@@ -80,18 +109,58 @@ final class BrushPickerView: NSView {
             tooltip: "Deselect (⌘D)",
             action: #selector(CanvasView.deselect(_:))
         )
-        stack.addArrangedSubview(deselectButton)
+        allButtons.append(deselectButton)
 
-        stack.addArrangedSubview(spacer(height: 8))
-        stack.addArrangedSubview(sectionLabel("Navigate"))
-
+        // Navigate: Hand (pan the canvas) and Move (translate the active layer).
         let handButton = makeIconButton(
             symbolName: "hand.raised.fill",
             tooltip: "Hand (Pan)",
             action: #selector(toolButtonClicked(_:))
         )
-        stack.addArrangedSubview(handButton)
         toolButtons.append((button: handButton, tool: .hand))
+        allButtons.append(handButton)
+
+        let moveButton = makeIconButton(
+            symbolName: "arrow.up.and.down.and.arrow.left.and.right",
+            tooltip: "Move Layer",
+            action: #selector(toolButtonClicked(_:))
+        )
+        toolButtons.append((button: moveButton, tool: .moveLayer))
+        allButtons.append(moveButton)
+
+        let grid = ToolsGridView()
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        grid.setButtons(allButtons)
+        stack.addArrangedSubview(grid)
+        section.registerBody(grid)
+        // Grid spans the full content width of the pane (the stack already
+        // applies its own leading/trailing insets). NSStackView with
+        // `alignment = .centerX` would otherwise hand the grid a zero width
+        // since it has no intrinsic width.
+        grid.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8).isActive = true
+        grid.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8).isActive = true
+
+        // Color Palette section — HSV ring + SV square. Bound bidirectionally
+        // to BrushPalette: dragging the wheel updates the active brush's
+        // color; external color changes (swatch click, hex input, eyedropper)
+        // push back into the wheel via `refreshColorWheel`.
+        let colorSection = Section(id: "colorPalette", title: "Color Palette")
+        let wheel = ColorWheelView()
+        wheel.translatesAutoresizingMaskIntoConstraints = false
+        colorSection.body.addArrangedSubview(wheel)
+        colorSection.install(in: stack)
+        self.colorSection = colorSection  // strong ref so disclosure button's target stays alive
+        self.colorWheel = wheel
+        // Square that fills the pane width (minus the same 8 pt insets used
+        // by the tools grid). Pinning to the LeftPaneView's leading/trailing
+        // sidesteps the nested-stack alignment quirks.
+        wheel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8).isActive = true
+        wheel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8).isActive = true
+        wheel.heightAnchor.constraint(equalTo: wheel.widthAnchor).isActive = true
+        wheel.setColor(BrushPalette.shared.activeBrush.color)
+        wheel.onColorChanged = { color in
+            BrushPalette.shared.updateActive { $0.color = color }
+        }
 
         refreshSelection()
     }
@@ -113,9 +182,11 @@ final class BrushPickerView: NSView {
             .withSymbolConfiguration(config) {
             button.image = image
         }
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.widthAnchor.constraint(equalToConstant: 36).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        // Frame-based sizing — `ToolsGridView` lays buttons out via setFrame
+        // in its `layout()`, so we must not pin width / height through
+        // autolayout (otherwise the two systems fight).
+        button.translatesAutoresizingMaskIntoConstraints = true
+        button.frame = NSRect(x: 0, y: 0, width: 36, height: 32)
         return button
     }
 
@@ -133,9 +204,11 @@ final class BrushPickerView: NSView {
             .withSymbolConfiguration(config) {
             button.image = image
         }
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.widthAnchor.constraint(equalToConstant: 36).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        // Frame-based sizing — `ToolsGridView` lays buttons out via setFrame
+        // in its `layout()`, so we must not pin width / height through
+        // autolayout (otherwise the two systems fight).
+        button.translatesAutoresizingMaskIntoConstraints = true
+        button.frame = NSRect(x: 0, y: 0, width: 36, height: 32)
         return button
     }
 

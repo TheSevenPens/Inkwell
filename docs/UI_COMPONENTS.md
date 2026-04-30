@@ -140,7 +140,7 @@ One customer each — the document window. Listed here so you know they exist an
 | Component | File | Purpose |
 |---|---|---|
 | `CanvasView` | [CanvasView.swift](../Sources/Inkwell/CanvasView.swift) | The MTKView. Handles all mouse / tablet input, brush dispatch (bitmap and vector paths), selection gestures, eyedropper, view transform gestures, debug telemetry. |
-| `BrushPickerView` | [BrushPickerView.swift](../Sources/Inkwell/BrushPickerView.swift) | Left sidebar — "Brushes" / "Selection" / "Navigate" sections with SF Symbol icon buttons. Toggle buttons for tools, action button for Deselect. |
+| `LeftPaneView` | [LeftPaneView.swift](../Sources/Inkwell/LeftPaneView.swift) | The left pane — a single "Tools" section today (brushes, selection shapes, deselect action, hand). Generic name so future palettes / sections land here without another rename. |
 | `BrushInspectorView` | [BrushInspectorView.swift](../Sources/Inkwell/BrushInspectorView.swift) | Right sidebar (top half). Color well + hex field + 12 swatches + 9 sliders. Wrapped in a `CollapsibleSection`. |
 | `LayerPanelView` | [LayerPanelView.swift](../Sources/Inkwell/LayerPanelView.swift) | Right sidebar (bottom half). Layer-action toolbar, Edit/Layer-Mask toggle, opacity slider, blend popup, NSOutlineView of the layer tree, mask toolbar. Wrapped in a `CollapsibleSection`. |
 | `StatusBarView` | [StatusBarView.swift](../Sources/Inkwell/StatusBarView.swift) | Bottom status bar — zoom %, rotation°, cursor canvas-position, document size. |

@@ -242,6 +242,18 @@ Decision 3 pins v1 to macOS Tahoe. Each subsequent macOS release prompts the que
 
 ---
 
+### Implicit paper color vs. Background Layer
+
+The canvas has a hardcoded `paperColor` (warm cream) drawn before any layer composites. The **Background Layer** type renders on top of that paper, so a BG layer with `alpha < 1` or a non-Normal blend mode shows the paper through.
+
+This is correct given today's architecture (paper = canvas; BG = content), but it's a trap: if a user expects the BG layer to *replace* the paper (e.g. they set BG opacity to 0.5 expecting a tinted-grey canvas, but instead they get a tinted-cream canvas), the result is surprising.
+
+**The cleaner end-state**: drop the implicit `paperColor` entirely. New documents start with a default white Background Layer at the bottom of the stack. Removing all background layers exposes a transparent canvas (which itself is a separate feature; today the renderer assumes opaque). Both changes are bigger than they look — `paperColor` is referenced in PNG export, JPEG flatten, and PSD codec, and a transparent canvas requires the compositor to know there's no paper to fall back on.
+
+**Tracking**: until then, the user manual carries an explicit caveat in the Layers section, and the recommended usage is to leave Background Layers at full opacity + Normal blend.
+
+---
+
 ## Known UX gaps to revisit
 
 These are not features — they are weak spots in the v1 design that we know about today.

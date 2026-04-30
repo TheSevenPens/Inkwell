@@ -37,6 +37,7 @@ Sections covering installation, first-run setup, a quick-start tutorial, keyboar
 
 - Multiple bitmap layers in a single document.
 - **Vector layers** (V1 — G-Pen only): strokes are stored as polylines + per-sample pressure and rendered as a continuous swept-path SDF ribbon (no stamp seams). Compose into the layer tree alongside bitmap and group layers. Create with **+ Vector** in the layer panel toolbar.
+- **Background layers**: solid-color full-canvas layers with no per-pixel data. Create with **+ BG** in the layer panel toolbar; it inserts at the bottom of the stack by default. With a Background Layer selected, a **Color** row appears in the Layer panel with a system color well. Standard layer attributes (visibility, opacity, blend mode, drag-to-reorder) all work. Caveat: the canvas itself has a built-in warm-cream **paper color** that renders before any layer. A Background Layer with `alpha < 1`, or a non-Normal blend mode, will show that paper color through. For a clean fill, leave the BG layer at full opacity / Normal blend (the default); this completely covers the paper. True transparent-canvas support is a separate, currently unsupported feature.
 - Layer groups (folders) with their own opacity (multiplied through children — pass-through groups in Phase 4; isolated group blending is a future addition).
 - Per-layer visibility, opacity, blend mode.
 - Layer panel: outline view with eye toggle and editable name; drag-to-reorder within and into groups; "M" badge when a layer has a mask.
@@ -50,7 +51,7 @@ Sections covering installation, first-run setup, a quick-start tutorial, keyboar
 
 ## Brushes
 
-Four built-in brushes share one data-driven engine. Click any in the **Brushes** picker on the left.
+Four built-in brushes share one data-driven engine. Click any in the **Tools** section of the left pane.
 
 - **G-Pen** — hard-edged round tip; pressure → size and pressure → opacity; tight spacing for inking. On vector layers, G-Pen produces a true swept-path stroke (pressure modulates radius along a single continuous ribbon; opacity is constant per stroke).
 - **Marker** — soft-edged; pressure → opacity primarily; layers translucently.
@@ -65,7 +66,7 @@ Four built-in brushes share one data-driven engine. Click any in the **Brushes**
   - The whole eraser drag is **one undo step** — Cmd+Z restores everything you erased in that drag.
   - The mode persists across launches.
 
-Brush settings (live-edited in the right inspector):
+Brush settings (live-edited in the right pane's Brush Settings section):
 
 - Size, hardness, spacing, opacity.
 - Pressure → size and pressure → opacity strengths (curve representation is provisional per ARCHITECTURE.md decision 11).
@@ -84,13 +85,13 @@ Brush settings (live-edited in the right inspector):
 
 ## Selections
 
-Pick **Rectangle**, **Ellipse**, or **Lasso** under the **Selection** section in the left sidebar. Drag on the canvas to select.
+Pick **Rectangle**, **Ellipse**, or **Lasso** in the **Tools** section of the left pane. Drag on the canvas to select.
 
 - **Selection arithmetic** via modifier keys at drag start: Shift = add, Option = subtract, Shift+Option = intersect, no modifier = replace.
 - **Live preview**: the marching-ants overlay updates as you drag.
 - **Marching ants** animate on committed selections (active or live preview).
 - **Constraint application**: every pixel-writing operation (brush stamp on a layer, brush stamp on a mask, eraser) multiplies by the selection mask at the canvas pixel.
-- Menu items: **Edit → Select All** (Cmd+A), **Deselect** (Cmd+D), **Invert Selection** (Cmd+Shift+I). The Selection section in the left sidebar also has a **Deselect** action button (xmark icon).
+- Menu items: **Edit → Select All** (Cmd+A), **Deselect** (Cmd+D), **Invert Selection** (Cmd+Shift+I). The Tools section in the left pane also has a **Deselect** action button (xmark icon).
 - Selections persist with the document across save and reload.
 - **Selection edits are on the undo stack**: rectangle / ellipse / lasso commits, Select All, Deselect, and Invert Selection can each be undone with Cmd+Z.
 
@@ -107,12 +108,12 @@ Pick **Rectangle**, **Ellipse**, or **Lasso** under the **Selection** section in
 
 ## View and navigation
 
-- **Pan**: two-finger trackpad scroll, **Space + drag**, or the persistent **Hand** tool (left sidebar, "Navigate" section).
+- **Pan**: two-finger trackpad scroll, **Space + drag**, or the persistent **Hand** tool (Tools section in the left pane).
 - **Zoom**: pinch on trackpad (cursor-anchored), **mouse wheel** (cursor-anchored, each notch ≈ 10%), Cmd + trackpad-scroll (cursor-anchored), Cmd + plus / minus.
 - **View → Fit Window** (Cmd+0), **View → Actual Size** (Cmd+1).
 - **Rotate**: two-finger trackpad rotate gesture (cursor-anchored), **R + drag** (anchored at view center), **Shift** during R+drag snaps to 15°, **Shift+R** resets rotation.
 - **Mid-stroke navigation**: zoom / pan / rotate during a brush stroke without ending it.
-- **Tab** toggles the left sidebar (Brushes / Selection / Navigate) and the right sidebar (Brush Inspector + Layers).
+- **Tab** toggles the left pane (Tools) and the right pane (Brush Inspector + Layers).
 - Zoom range: ~5% to 6400%.
 - **Sampling**: the compositor uses linear filtering when zooming out (smooth downscale, no shimmer) and nearest-neighbour when zooming in (crisp pixels, no edge blur). The transition is automatic around 100%.
 - **View → Show Vector Path Overlay**: debug overlay that draws each visible vector layer's raw stylus samples as orange node markers connected by cyan polyline segments, on top of the normal composite. Useful for inspecting stroke geometry and seeing how the densifier interpolates between samples. State persists across launches.

@@ -218,6 +218,51 @@ final class BitmapLayer: LayerNode, CompositableLayer {
 
     // MARK: - Whole-layer rebuild (Phase 10 document transforms)
 
+    /// Translate the layer's contents by an integer-pixel offset. Used by
+    /// the Move Layer tool when committing a drag. Pixels that move off the
+    /// canvas are clipped; new tile coords come into existence as needed.
+    /// No-op if both deltas are zero.
+    func translatePixels(dx: Int, dy: Int) {
+        if dx == 0 && dy == 0 { return }
+        // Render the current tile content into a new canvas-sized CGImage,
+        // shifted by (dx, dy), then re-rasterize via replaceWithImage.
+        let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+        let info = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let ctx = CGContext(
+            data: nil,
+            width: canvasWidth,
+            height: canvasHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: canvasWidth * 4,
+            space: cs,
+            bitmapInfo: info
+        ) else { return }
+        // Draw existing tiles into the context at their new (shifted) rects.
+        for entry in allTiles() {
+            let bytes = readTileBytes(entry.texture)
+            guard let provider = CGDataProvider(data: bytes as CFData),
+                  let img = CGImage(
+                    width: Canvas.tileSize,
+                    height: Canvas.tileSize,
+                    bitsPerComponent: 8,
+                    bitsPerPixel: 32,
+                    bytesPerRow: Canvas.tileSize * 4,
+                    space: cs,
+                    bitmapInfo: CGBitmapInfo(rawValue: info),
+                    provider: provider,
+                    decode: nil,
+                    shouldInterpolate: false,
+                    intent: .defaultIntent
+                  )
+            else { continue }
+            let r = canvasRect(for: entry.coord)
+                .offsetBy(dx: CGFloat(dx), dy: CGFloat(dy))
+            ctx.draw(img, in: r)
+        }
+        guard let translated = ctx.makeImage() else { return }
+        replaceWithImage(translated, newWidth: canvasWidth, newHeight: canvasHeight)
+    }
+
     /// Replace the layer's tile contents with a new flat image at the given dimensions.
     /// Discards the existing tile dictionary and re-allocates only tiles whose region
     /// has any non-zero alpha pixel in `image`.

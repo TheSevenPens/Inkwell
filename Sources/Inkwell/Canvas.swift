@@ -254,6 +254,21 @@ final class Canvas {
     }
 
     @discardableResult
+    func addNewBackgroundLayer() -> UUID {
+        let layer = BackgroundLayer(
+            name: makeUniqueLayerName(prefix: "Background"),
+            color: .white
+        )
+        // Insert at the *bottom* of the stack so the background sits beneath
+        // every other layer by default. The user can re-order via drag if
+        // they want it elsewhere.
+        rootLayers.append(layer)
+        activeLayerId = layer.id
+        notifyChanged()
+        return layer.id
+    }
+
+    @discardableResult
     func addNewVectorLayer() -> UUID {
         let layer = VectorLayer(
             name: makeUniqueLayerName(prefix: "Vector"),
@@ -459,6 +474,45 @@ final class Canvas {
         }
     }
 
+    /// What the renderer treats as a single drawable layer. Bitmap and
+    /// vector layers expose tiles via `CompositableLayer`; background
+    /// layers don't — they paint as one canvas-sized quad. Unifying them
+    /// in a single walk keeps stacking-order logic in one place.
+    enum RenderLayer {
+        case background(BackgroundLayer)
+        case compositable(any CompositableLayer)
+    }
+
+    /// Walk every visible drawable leaf in compositing order (back-to-front),
+    /// effective opacity multiplied through enclosing groups. Yields
+    /// `BackgroundLayer`s and `CompositableLayer`s in one stream.
+    func walkVisibleRenderables(_ visit: (RenderLayer, CGFloat, LayerBlendMode) -> Void) {
+        walkRender(reversed: Array(rootLayers.reversed()), parentMultiplier: 1.0, visit: visit)
+    }
+
+    private func walkRender(
+        reversed nodes: [LayerNode],
+        parentMultiplier: CGFloat,
+        visit: (RenderLayer, CGFloat, LayerBlendMode) -> Void
+    ) {
+        for node in nodes {
+            guard node.isVisible else { continue }
+            let effective = node.opacity * parentMultiplier
+            if effective < 0.001 { continue }
+            if let bg = node as? BackgroundLayer {
+                visit(.background(bg), effective, bg.blendMode)
+            } else if let compositable = node as? (any CompositableLayer) {
+                visit(.compositable(compositable), effective, compositable.blendMode)
+            } else if let group = node as? GroupLayer {
+                walkRender(
+                    reversed: Array(group.children.reversed()),
+                    parentMultiplier: effective,
+                    visit: visit
+                )
+            }
+        }
+    }
+
     /// Walk leaf compositable layers (bitmap and vector) in compositing order
     /// (back-to-front), with their effective opacity multiplied by enclosing
     /// groups (pass-through model).
@@ -512,29 +566,37 @@ final class Canvas {
         )
         flat.fill(CGRect(x: 0, y: 0, width: width, height: height))
 
-        walkVisibleCompositables { layer, effectiveOpacity, blendMode in
+        walkVisibleRenderables { kind, effectiveOpacity, blendMode in
             flat.saveGState()
             flat.setBlendMode(blendMode.cgBlendMode)
             flat.setAlpha(effectiveOpacity)
-            for entry in layer.allTiles() {
-                let bytes = layer.readTileBytes(entry.texture)
-                guard let provider = CGDataProvider(data: bytes as CFData) else { continue }
-                guard let img = CGImage(
-                    width: Canvas.tileSize,
-                    height: Canvas.tileSize,
-                    bitsPerComponent: 8,
-                    bitsPerPixel: 32,
-                    bytesPerRow: Canvas.tileSize * 4,
-                    space: cs,
-                    bitmapInfo: CGBitmapInfo(rawValue: info),
-                    provider: provider,
-                    decode: nil,
-                    shouldInterpolate: false,
-                    intent: .defaultIntent
-                ) else { continue }
-                flat.draw(img, in: layer.canvasRect(for: entry.coord))
+            switch kind {
+            case .background(let bg):
+                flat.setFillColor(red: bg.color.r, green: bg.color.g, blue: bg.color.b, alpha: bg.color.a)
+                flat.fill(CGRect(x: 0, y: 0, width: width, height: height))
+                flat.restoreGState()
+                return
+            case .compositable(let layer):
+                for entry in layer.allTiles() {
+                    let bytes = layer.readTileBytes(entry.texture)
+                    guard let provider = CGDataProvider(data: bytes as CFData) else { continue }
+                    guard let img = CGImage(
+                        width: Canvas.tileSize,
+                        height: Canvas.tileSize,
+                        bitsPerComponent: 8,
+                        bitsPerPixel: 32,
+                        bytesPerRow: Canvas.tileSize * 4,
+                        space: cs,
+                        bitmapInfo: CGBitmapInfo(rawValue: info),
+                        provider: provider,
+                        decode: nil,
+                        shouldInterpolate: false,
+                        intent: .defaultIntent
+                    ) else { continue }
+                    flat.draw(img, in: layer.canvasRect(for: entry.coord))
+                }
+                flat.restoreGState()
             }
-            flat.restoreGState()
         }
 
         return flat.makeImage()

@@ -36,6 +36,18 @@ private struct VectorOverlayUniforms {
     var _pad2: Float = 0
 }
 
+private struct SolidUniforms {
+    var transform: simd_float4x4
+    var canvasSize: SIMD2<Float>
+    var _pad0: Float = 0
+    var _pad1: Float = 0
+    var color: SIMD4<Float>
+    var opacity: Float
+    var blendMode: Int32
+    var _pad2: Float = 0
+    var _pad3: Float = 0
+}
+
 /// Phase 7 renderer: composites the layer tree as before, then draws the marching-ants
 /// overlay if a selection is active.
 final class CanvasRenderer {
@@ -73,6 +85,52 @@ final class CanvasRenderer {
     fragment float4 paper_fragment(PaperOut in [[stage_in]],
                                    constant PaperUniforms &u [[buffer(0)]]) {
         return u.paperColor;
+    }
+
+    // ---- Background-layer (solid color full-canvas) pipeline ----
+
+    struct SolidUniforms {
+        float4x4 transform;
+        float2 canvasSize;
+        float4 color;       // straight (non-premultiplied) sRGB
+        float opacity;      // multiplied into color.a
+        int blendMode;
+    };
+
+    vertex PaperOut solid_vertex(uint vid [[vertex_id]],
+                                 constant SolidUniforms &u [[buffer(0)]]) {
+        float2 corner = kCanvasQuadCorners[vid];
+        PaperOut out;
+        out.position = u.transform * float4(corner * u.canvasSize, 0, 1);
+        return out;
+    }
+
+    fragment float4 solid_fragment(PaperOut in [[stage_in]],
+                                   constant SolidUniforms &u [[buffer(0)]],
+                                   float4 dst [[color(0)]]) {
+        float a = u.color.a * u.opacity;
+        float4 src = float4(u.color.rgb * a, a);
+        float3 srcUn = u.color.rgb;
+        float3 dstUn = dst.a > 0.0001 ? dst.rgb / dst.a : float3(0);
+        float3 blendUn;
+        if (u.blendMode == 1) {
+            blendUn = srcUn * dstUn;
+        } else if (u.blendMode == 2) {
+            blendUn = 1.0 - (1.0 - srcUn) * (1.0 - dstUn);
+        } else if (u.blendMode == 3) {
+            blendUn = float3(
+                dstUn.r < 0.5 ? 2.0 * srcUn.r * dstUn.r : 1.0 - 2.0 * (1.0 - srcUn.r) * (1.0 - dstUn.r),
+                dstUn.g < 0.5 ? 2.0 * srcUn.g * dstUn.g : 1.0 - 2.0 * (1.0 - srcUn.g) * (1.0 - dstUn.g),
+                dstUn.b < 0.5 ? 2.0 * srcUn.b * dstUn.b : 1.0 - 2.0 * (1.0 - srcUn.b) * (1.0 - dstUn.b)
+            );
+        } else {
+            blendUn = srcUn;
+        }
+        float3 outRgb = src.rgb * (1.0 - dst.a)
+                      + dst.rgb * (1.0 - src.a)
+                      + blendUn * src.a * dst.a;
+        float outA = src.a + dst.a * (1.0 - src.a);
+        return float4(outRgb, outA);
     }
 
     struct TileUniforms {
@@ -206,6 +264,7 @@ final class CanvasRenderer {
     private let device: any MTLDevice
     private let commandQueue: any MTLCommandQueue
     private let paperPipeline: any MTLRenderPipelineState
+    private let solidPipeline: any MTLRenderPipelineState
     private let tilePipeline: any MTLRenderPipelineState
     private let antsPipeline: any MTLRenderPipelineState
     private let vectorOverlayPipeline: any MTLRenderPipelineState
@@ -230,6 +289,8 @@ final class CanvasRenderer {
         let library = try device.makeLibrary(source: Self.metalSource, options: nil)
         guard let pv = library.makeFunction(name: "paper_vertex"),
               let pf = library.makeFunction(name: "paper_fragment"),
+              let sv = library.makeFunction(name: "solid_vertex"),
+              let sf = library.makeFunction(name: "solid_fragment"),
               let tv = library.makeFunction(name: "tile_vertex"),
               let tf = library.makeFunction(name: "tile_fragment"),
               let av = library.makeFunction(name: "ants_vertex"),
@@ -251,6 +312,16 @@ final class CanvasRenderer {
         tilePD.colorAttachments[0].pixelFormat = viewColorPixelFormat
         tilePD.colorAttachments[0].isBlendingEnabled = false
         self.tilePipeline = try device.makeRenderPipelineState(descriptor: tilePD)
+
+        // Solid background pipeline. Like the tile pipeline, blending is done
+        // in the shader via framebuffer fetch (`dst [[color(0)]]`), so the
+        // pipeline-level blend is disabled.
+        let solidPD = MTLRenderPipelineDescriptor()
+        solidPD.vertexFunction = sv
+        solidPD.fragmentFunction = sf
+        solidPD.colorAttachments[0].pixelFormat = viewColorPixelFormat
+        solidPD.colorAttachments[0].isBlendingEnabled = false
+        self.solidPipeline = try device.makeRenderPipelineState(descriptor: solidPD)
 
         // Marching ants: standard alpha-over.
         let antsPD = MTLRenderPipelineDescriptor()
@@ -309,7 +380,8 @@ final class CanvasRenderer {
     func render(
         in view: MTKView,
         viewTransform: simd_float4x4,
-        visibleCanvasRect: CGRect
+        visibleCanvasRect: CGRect,
+        layerOffsets: [UUID: CGPoint] = [:]
     ) {
         guard let canvas,
               let drawable = view.currentDrawable,
@@ -332,30 +404,61 @@ final class CanvasRenderer {
         encoder.setFragmentBytes(&paperUniforms, length: MemoryLayout<PaperUniforms>.size, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
 
-        // Layer tree compositing
-        encoder.setRenderPipelineState(tilePipeline)
-        encoder.setFragmentSamplerState(tileSampler, index: 0)
+        // Layer tree compositing. Tile-based layers (bitmap, vector) go
+        // through tilePipeline; background layers go through solidPipeline.
+        // The pipelines are switched per-layer based on the kind yielded by
+        // walkVisibleRenderables.
         let defaultMask = canvas.defaultMaskTexture
-        canvas.walkVisibleCompositables { layer, effectiveOpacity, blendMode in
-            let visibleCoords = layer.tilesIntersecting(visibleCanvasRect)
-            for coord in visibleCoords {
-                guard let texture = layer.tile(at: coord) else { continue }
-                var tu = TileUniforms(
+        canvas.walkVisibleRenderables { kind, effectiveOpacity, blendMode in
+            switch kind {
+            case .background(let bg):
+                // Background is full-canvas; per-layer offsets are a no-op
+                // since the layer covers everything regardless.
+                encoder.setRenderPipelineState(solidPipeline)
+                var su = SolidUniforms(
                     transform: viewTransform,
-                    tileOrigin: SIMD2<Float>(
-                        Float(coord.x * Canvas.tileSize),
-                        Float(coord.y * Canvas.tileSize)
+                    canvasSize: SIMD2<Float>(Float(canvas.width), Float(canvas.height)),
+                    color: SIMD4<Float>(
+                        Float(bg.color.r),
+                        Float(bg.color.g),
+                        Float(bg.color.b),
+                        Float(bg.color.a)
                     ),
-                    tileSize: Float(Canvas.tileSize),
-                    layerOpacity: Float(effectiveOpacity),
+                    opacity: Float(effectiveOpacity),
                     blendMode: blendMode.shaderIndex
                 )
-                let maskTex: any MTLTexture = layer.mask?.tile(at: coord) ?? defaultMask
-                encoder.setVertexBytes(&tu, length: MemoryLayout<TileUniforms>.size, index: 0)
-                encoder.setFragmentBytes(&tu, length: MemoryLayout<TileUniforms>.size, index: 0)
-                encoder.setFragmentTexture(texture, index: 0)
-                encoder.setFragmentTexture(maskTex, index: 1)
+                encoder.setVertexBytes(&su, length: MemoryLayout<SolidUniforms>.size, index: 0)
+                encoder.setFragmentBytes(&su, length: MemoryLayout<SolidUniforms>.size, index: 0)
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+            case .compositable(let layer):
+                encoder.setRenderPipelineState(tilePipeline)
+                encoder.setFragmentSamplerState(tileSampler, index: 0)
+                // Active in-flight Move-tool offset (canvas pixels). Applied
+                // to the tile origin so the layer appears translated without
+                // mutating any tile data. Baked into the layer on mouseUp.
+                let off = layerOffsets[layer.id] ?? .zero
+                // Adjust visibility query so culling accounts for the offset.
+                let translatedVisibleRect = visibleCanvasRect.offsetBy(dx: -off.x, dy: -off.y)
+                let visibleCoords = layer.tilesIntersecting(translatedVisibleRect)
+                for coord in visibleCoords {
+                    guard let texture = layer.tile(at: coord) else { continue }
+                    var tu = TileUniforms(
+                        transform: viewTransform,
+                        tileOrigin: SIMD2<Float>(
+                            Float(coord.x * Canvas.tileSize) + Float(off.x),
+                            Float(coord.y * Canvas.tileSize) + Float(off.y)
+                        ),
+                        tileSize: Float(Canvas.tileSize),
+                        layerOpacity: Float(effectiveOpacity),
+                        blendMode: blendMode.shaderIndex
+                    )
+                    let maskTex: any MTLTexture = layer.mask?.tile(at: coord) ?? defaultMask
+                    encoder.setVertexBytes(&tu, length: MemoryLayout<TileUniforms>.size, index: 0)
+                    encoder.setFragmentBytes(&tu, length: MemoryLayout<TileUniforms>.size, index: 0)
+                    encoder.setFragmentTexture(texture, index: 0)
+                    encoder.setFragmentTexture(maskTex, index: 1)
+                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+                }
             }
         }
 

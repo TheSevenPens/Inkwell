@@ -14,6 +14,10 @@ final class CollapsibleSection {
     private(set) var bodyItems: [NSView] = []
     private(set) var isCollapsed: Bool = false
 
+    /// Called whenever the user toggles the disclosure (or `setCollapsed(_:)`
+    /// is invoked programmatically). Useful for persisting state.
+    var onCollapsedChanged: (() -> Void)?
+
     init(title: String) {
         let button = NSButton()
         button.bezelStyle = .disclosure
@@ -52,10 +56,23 @@ final class CollapsibleSection {
         bodyItems.append(view)
     }
 
+    /// Programmatically apply a collapsed state. Used to restore persisted
+    /// state at panel creation time.
+    func setCollapsed(_ collapsed: Bool) {
+        guard collapsed != isCollapsed else { return }
+        isCollapsed = collapsed
+        disclosure.state = collapsed ? .off : .on
+        for v in bodyItems {
+            v.isHidden = collapsed
+        }
+        onCollapsedChanged?()
+    }
+
     @objc private func toggle(_ sender: NSButton) {
         isCollapsed = (sender.state == .off)
         for v in bodyItems {
             v.isHidden = isCollapsed
         }
+        onCollapsedChanged?()
     }
 }
