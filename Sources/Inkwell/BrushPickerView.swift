@@ -84,6 +84,28 @@ final class BrushPickerView: NSView {
             toolButtons.append((button: button, tool: def.tool))
         }
 
+        // Navigate section (Hand tool)
+        let spacer2 = NSView()
+        spacer2.translatesAutoresizingMaskIntoConstraints = false
+        spacer2.heightAnchor.constraint(equalToConstant: 6).isActive = true
+        stack.addArrangedSubview(spacer2)
+
+        let navTitle = NSTextField(labelWithString: "Navigate")
+        navTitle.font = .boldSystemFont(ofSize: 12)
+        navTitle.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(navTitle)
+
+        let handButton = NSButton()
+        handButton.title = "Hand"
+        handButton.bezelStyle = .roundRect
+        handButton.setButtonType(.pushOnPushOff)
+        handButton.target = self
+        handButton.action = #selector(toolButtonClicked(_:))
+        handButton.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(handButton)
+        handButton.widthAnchor.constraint(equalToConstant: 100).isActive = true
+        toolButtons.append((button: handButton, tool: .hand))
+
         refreshSelection()
     }
 

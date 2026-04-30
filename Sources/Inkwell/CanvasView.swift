@@ -25,14 +25,12 @@ final class CanvasView: MTKView {
 
     private var emitter: StrokeEmitter?
     private var strokeTarget: StrokeTarget?
+    private var strokeForcesErase: Bool = false
     private var strokeBeforeLayer = BitmapLayer.TileSnapshot.empty
     private var strokeBeforeMask = LayerMask.TileSnapshot.empty
     private var strokeAffectedCoords: Set<TileCoord> = []
 
     private var selectionGesture: SelectionGesture?
-    /// Selection bytes captured at gesture start — the baseline that the in-progress
-    /// shape combines with on every drag update. Lets us show a live preview that
-    /// reflects the current Shift/Option arithmetic without compounding.
     private var preGestureSelectionBytes: [UInt8]?
 
     private var lastSample: StylusSample?
@@ -43,9 +41,16 @@ final class CanvasView: MTKView {
     private var hasFitOnce = false
 
     private var spaceHeld = false
+    private var rHeld = false
     private var isPanning = false
+    private var isRotateDragging = false
     private var panStartPoint: NSPoint = .zero
     private var panStartOffset: CGPoint = .zero
+    private var rotateDragStartMouseAngle: CGFloat = 0
+    private var rotateDragBaseRotation: CGFloat = 0
+
+    /// Set by DocumentWindowController; called when the user presses Tab.
+    var onTogglePanels: (() -> Void)?
 
     init(document: Document) {
         self.document = document
@@ -111,7 +116,9 @@ final class CanvasView: MTKView {
         }
 
         ToolState.shared.addObserver { [weak self] in
-            if let win = self?.window { win.invalidateCursorRects(for: self!) }
+            if let self, let win = self.window {
+                win.invalidateCursorRects(for: self)
+            }
             self?.needsDisplay = true
         }
 
@@ -168,6 +175,7 @@ final class CanvasView: MTKView {
         let sy = (bounds.height - pad * 2) / ch
         let s = max(ViewTransform.minScale, min(sx, sy, 8.0))
         viewTransform.scale = s
+        viewTransform.rotation = 0
         let cwPt = cw * s
         let chPt = ch * s
         viewTransform.offset = CGPoint(
@@ -183,6 +191,7 @@ final class CanvasView: MTKView {
         let cw = CGFloat(canvas.width)
         let ch = CGFloat(canvas.height)
         viewTransform.scale = 1.0
+        viewTransform.rotation = 0
         viewTransform.offset = CGPoint(
             x: (bounds.width - cw) / 2.0,
             y: (bounds.height - ch) / 2.0
@@ -223,13 +232,57 @@ final class CanvasView: MTKView {
         return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
+    // MARK: - Eyedropper (Cmd-modifier sample)
+
+    private func sampleColorAtCanvasPoint(_ canvasPoint: CGPoint) -> ColorRGBA? {
+        guard let layer = canvas.activeBitmapLayer else { return nil }
+        let cx = Int(canvasPoint.x.rounded())
+        let cy = Int(canvasPoint.y.rounded())
+        guard cx >= 0, cx < canvas.width, cy >= 0, cy < canvas.height else { return nil }
+        let tx = cx / Canvas.tileSize
+        let ty = cy / Canvas.tileSize
+        guard let tex = layer.tile(at: TileCoord(x: tx, y: ty)) else { return nil }
+        let pxLocalX = cx % Canvas.tileSize
+        let pxLocalY = cy % Canvas.tileSize
+        // Tile data is top-down; canvas Y `cy` lives at row `tileSize - 1 - pxLocalY`.
+        let row = Canvas.tileSize - 1 - pxLocalY
+        var pixel: [UInt8] = [0, 0, 0, 0]
+        pixel.withUnsafeMutableBufferPointer { buf in
+            tex.getBytes(
+                buf.baseAddress!,
+                bytesPerRow: 4,
+                from: MTLRegionMake2D(pxLocalX, row, 1, 1),
+                mipmapLevel: 0
+            )
+        }
+        let a = CGFloat(pixel[3]) / 255.0
+        if a < 0.001 { return nil }
+        // Un-premultiply for color picker semantics.
+        let r = min(1.0, CGFloat(pixel[0]) / 255.0 / a)
+        let g = min(1.0, CGFloat(pixel[1]) / 255.0 / a)
+        let b = min(1.0, CGFloat(pixel[2]) / 255.0 / a)
+        return ColorRGBA(r: r, g: g, b: b, a: 1.0)
+    }
+
     // MARK: - Mouse / stylus dispatch
 
     override func mouseDown(with event: NSEvent) {
         if spaceHeld { beginPan(with: event); return }
+        if rHeld { beginRotateDrag(with: event); return }
         switch ToolState.shared.tool {
         case .brush:
-            beginStroke(at: sampleFor(event: event))
+            if event.modifierFlags.contains(.command) {
+                // Cmd-click (without shift/option being a select-modifier conflict): eyedropper.
+                let p = canvasPointForEvent(event)
+                if let color = sampleColorAtCanvasPoint(p) {
+                    BrushPalette.shared.updateActive { $0.color = color }
+                }
+                return
+            }
+            let optionEraser = event.modifierFlags.contains(.option)
+            beginStroke(at: sampleFor(event: event), forceErase: optionEraser)
+        case .hand:
+            beginPan(with: event)
         case .selectRectangle:
             beginSelectionGesture(.rectangle(start: canvasPointForEvent(event),
                                              current: canvasPointForEvent(event),
@@ -246,11 +299,14 @@ final class CanvasView: MTKView {
 
     override func mouseDragged(with event: NSEvent) {
         if isPanning { continuePan(with: event); return }
+        if isRotateDragging { continueRotateDrag(with: event); return }
         switch ToolState.shared.tool {
         case .brush:
             let sample = sampleFor(event: event)
             lastSample = sample
             emitter?.continueTo(sample)
+        case .hand:
+            continuePan(with: event)
         case .selectRectangle, .selectEllipse, .selectLasso:
             updateSelectionGesture(with: canvasPointForEvent(event))
         }
@@ -258,6 +314,7 @@ final class CanvasView: MTKView {
 
     override func mouseUp(with event: NSEvent) {
         if isPanning { endPan(with: event); return }
+        if isRotateDragging { endRotateDrag(with: event); return }
         switch ToolState.shared.tool {
         case .brush:
             let sample = sampleFor(event: event)
@@ -265,6 +322,8 @@ final class CanvasView: MTKView {
             emitter = nil
             stopAirbrushTimer()
             commitUndoIfNeeded()
+        case .hand:
+            endPan(with: event)
         case .selectRectangle, .selectEllipse, .selectLasso:
             updateSelectionGesture(with: canvasPointForEvent(event))
             commitSelectionGesture()
@@ -273,13 +332,14 @@ final class CanvasView: MTKView {
 
     // MARK: - Brush stroke path
 
-    private func beginStroke(at sample: StylusSample) {
+    private func beginStroke(at sample: StylusSample, forceErase: Bool) {
         guard let activeBitmap = canvas.activeBitmapLayer else { return }
         if canvas.editingMask, activeBitmap.mask != nil {
             strokeTarget = .mask(layerId: activeBitmap.id)
         } else {
             strokeTarget = .layer(layerId: activeBitmap.id)
         }
+        strokeForcesErase = forceErase
         strokeBeforeLayer = .empty
         strokeBeforeMask = .empty
         strokeAffectedCoords = []
@@ -339,13 +399,14 @@ final class CanvasView: MTKView {
                 strokeBeforeLayer.absentTiles.formUnion(snap.absentTiles)
                 strokeAffectedCoords.formUnion(newCoords)
             }
+            let blendMode: BrushBlendMode = strokeForcesErase ? .erase : brush.blendMode
             let dispatch = StampDispatch(
                 canvasCenter: sample.canvasPoint,
                 radius: radius,
                 alpha: Float(alpha),
                 angleRadians: Float(tiltAngle),
                 color: brush.color.simd,
-                blendMode: brush.blendMode
+                blendMode: blendMode
             )
             stampRenderer.applyStamp(
                 dispatch,
@@ -390,6 +451,7 @@ final class CanvasView: MTKView {
     private func commitUndoIfNeeded() {
         defer {
             strokeTarget = nil
+            strokeForcesErase = false
             strokeBeforeLayer = .empty
             strokeBeforeMask = .empty
             strokeAffectedCoords = []
@@ -451,14 +513,9 @@ final class CanvasView: MTKView {
             selectionGesture = nil
             preGestureSelectionBytes = nil
         }
-        // Final state was already painted into canvas.selection by the last
-        // renderSelectionPreview call. Just mark the document dirty.
         document?.updateChangeCount(.changeDone)
     }
 
-    /// Re-render the live preview by combining `preGestureSelectionBytes` (baseline)
-    /// with the in-progress shape per the gesture's op, then writing into
-    /// `canvas.selection` directly.
     private func renderSelectionPreview() {
         guard let g = selectionGesture, let baseline = preGestureSelectionBytes else { return }
         let scratch = canvas.selection ?? Selection(
@@ -504,7 +561,6 @@ final class CanvasView: MTKView {
         if let shape = shapeBytes {
             combined = combine(baseline: baseline, shape: shape, op: op)
         } else {
-            // Degenerate shape (zero size, too few lasso points) — preview the baseline.
             combined = baseline
         }
         canvas.replaceSelectionBytes(combined)
@@ -551,7 +607,7 @@ final class CanvasView: MTKView {
         document?.updateChangeCount(.changeDone)
     }
 
-    // MARK: - Mouse-moved (cursor + airbrush)
+    // MARK: - Mouse-moved
 
     override func mouseMoved(with event: NSEvent) {
         if ToolState.shared.tool == .brush {
@@ -618,6 +674,44 @@ final class CanvasView: MTKView {
         cursorUpdate(with: event)
     }
 
+    // MARK: - Rotate (R + drag)
+
+    private func beginRotateDrag(with event: NSEvent) {
+        isRotateDragging = true
+        let p = convert(event.locationInWindow, from: nil)
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        rotateDragStartMouseAngle = atan2(p.y - center.y, p.x - center.x)
+        rotateDragBaseRotation = viewTransform.rotation
+        NSCursor.crosshair.set()
+    }
+
+    private func continueRotateDrag(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let cur = atan2(p.y - center.y, p.x - center.x)
+        var newRotation = rotateDragBaseRotation + (cur - rotateDragStartMouseAngle)
+        if event.modifierFlags.contains(.shift) {
+            let step: CGFloat = 15.0 * .pi / 180.0
+            newRotation = (newRotation / step).rounded() * step
+        }
+        viewTransform.setRotation(newRotation, anchor: center)
+        needsDisplay = true
+    }
+
+    private func endRotateDrag(with event: NSEvent) {
+        isRotateDragging = false
+        cursorUpdate(with: event)
+    }
+
+    // MARK: - Trackpad rotate gesture
+
+    override func rotate(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        let radiansDelta = CGFloat(event.rotation) * .pi / 180.0
+        viewTransform.rotate(by: radiansDelta, at: p)
+        needsDisplay = true
+    }
+
     // MARK: - Scroll & zoom
 
     override func scrollWheel(with event: NSEvent) {
@@ -642,17 +736,40 @@ final class CanvasView: MTKView {
     // MARK: - Keys
 
     override func keyDown(with event: NSEvent) {
-        if event.charactersIgnoringModifiers == " ", !event.isARepeat {
+        let chars = event.charactersIgnoringModifiers ?? ""
+        if chars == " ", !event.isARepeat {
             spaceHeld = true
             cursorUpdate(with: event)
+            return
+        }
+        if (chars == "r" || chars == "R"), !event.isARepeat {
+            if event.modifierFlags.contains(.shift) {
+                // Shift+R: reset rotation to zero around view center.
+                let center = CGPoint(x: bounds.midX, y: bounds.midY)
+                viewTransform.setRotation(0, anchor: center)
+                needsDisplay = true
+                return
+            }
+            rHeld = true
+            cursorUpdate(with: event)
+            return
+        }
+        if chars == "\t", !event.isARepeat {
+            onTogglePanels?()
             return
         }
         super.keyDown(with: event)
     }
 
     override func keyUp(with event: NSEvent) {
-        if event.charactersIgnoringModifiers == " " {
+        let chars = event.charactersIgnoringModifiers ?? ""
+        if chars == " " {
             spaceHeld = false
+            cursorUpdate(with: event)
+            return
+        }
+        if chars == "r" || chars == "R" {
+            rHeld = false
             cursorUpdate(with: event)
             return
         }
@@ -664,12 +781,18 @@ final class CanvasView: MTKView {
     override func cursorUpdate(with event: NSEvent) {
         if isPanning {
             NSCursor.closedHand.set()
+        } else if isRotateDragging {
+            NSCursor.crosshair.set()
         } else if spaceHeld {
             NSCursor.openHand.set()
+        } else if rHeld {
+            NSCursor.crosshair.set()
         } else {
             switch ToolState.shared.tool {
             case .brush:
                 brushCursor().set()
+            case .hand:
+                NSCursor.openHand.set()
             case .selectRectangle, .selectEllipse, .selectLasso:
                 NSCursor.crosshair.set()
             }
@@ -682,6 +805,10 @@ final class CanvasView: MTKView {
         let edge = ceil(displayRadius * 2 + 4)
         let imageSize = NSSize(width: edge, height: edge)
         let image = NSImage(size: imageSize, flipped: false) { rect in
+            // Note on rotation: the cursor is currently a circle, which is
+            // rotation-invariant. When we add tilt/rotation indicators (or
+            // non-circular tip previews) per ARCHITECTURE.md decision 13's
+            // forward implications, this is the place to apply view rotation.
             NSColor.black.setStroke()
             let outer = NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1))
             outer.lineWidth = 1.0

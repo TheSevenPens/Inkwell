@@ -1,10 +1,11 @@
 import Foundation
 
-/// App-wide active tool. Brush palette and selection tools are mutually exclusive
-/// at the high level; choosing a brush implies `.brush`.
+/// App-wide active tool. Brush palette and selection / hand tools are mutually
+/// exclusive at the high level; choosing a brush implies `.brush`.
 final class ToolState {
     enum Tool: Equatable {
         case brush
+        case hand
         case selectRectangle
         case selectEllipse
         case selectLasso

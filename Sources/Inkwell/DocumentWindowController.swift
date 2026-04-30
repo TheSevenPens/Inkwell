@@ -1,6 +1,10 @@
 import AppKit
 
 final class DocumentWindowController: NSWindowController {
+    private weak var brushPicker: NSView?
+    private weak var rightHost: NSView?
+    private var panelsHidden: Bool = false
+
     init(document: Document) {
         let canvasView = CanvasView(document: document)
         let brushPicker = BrushPickerView()
@@ -8,7 +12,6 @@ final class DocumentWindowController: NSWindowController {
         let layerPanel = LayerPanelView()
         layerPanel.attach(canvas: document.canvas)
 
-        // Right sidebar: inspector at top (intrinsic height), layer panel below (fills).
         let rightHost = NSView()
         rightHost.translatesAutoresizingMaskIntoConstraints = false
         rightHost.wantsLayer = true
@@ -40,8 +43,10 @@ final class DocumentWindowController: NSWindowController {
 
         brushPicker.translatesAutoresizingMaskIntoConstraints = false
         canvasView.translatesAutoresizingMaskIntoConstraints = false
-        brushPicker.widthAnchor.constraint(equalToConstant: 130).isActive = true
-        rightHost.widthAnchor.constraint(equalToConstant: 300).isActive = true
+        let pickerWidth = brushPicker.widthAnchor.constraint(equalToConstant: 130)
+        pickerWidth.isActive = true
+        let rightWidth = rightHost.widthAnchor.constraint(equalToConstant: 300)
+        rightWidth.isActive = true
         canvasView.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let window = NSWindow(
@@ -69,8 +74,17 @@ final class DocumentWindowController: NSWindowController {
         window.title = "Untitled"
         window.center()
         super.init(window: window)
+        self.brushPicker = brushPicker
+        self.rightHost = rightHost
+        canvasView.onTogglePanels = { [weak self] in self?.togglePanels() }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("Not supported") }
+
+    func togglePanels() {
+        panelsHidden.toggle()
+        brushPicker?.isHidden = panelsHidden
+        rightHost?.isHidden = panelsHidden
+    }
 }
