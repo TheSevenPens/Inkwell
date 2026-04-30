@@ -7,6 +7,7 @@ final class StatusBarView: NSView {
     private let zoomLabel = NSTextField(labelWithString: "")
     private let positionLabel = NSTextField(labelWithString: "")
     private let docSizeLabel = NSTextField(labelWithString: "")
+    private let toolIndicatorLabel = NSTextField(labelWithString: "")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -27,6 +28,9 @@ final class StatusBarView: NSView {
         positionLabel.textColor = .secondaryLabelColor
         docSizeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         docSizeLabel.textColor = .tertiaryLabelColor
+        toolIndicatorLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        toolIndicatorLabel.textColor = .systemOrange
+        toolIndicatorLabel.isHidden = true
 
         let spacer = NSView()
         spacer.translatesAutoresizingMaskIntoConstraints = false
@@ -34,6 +38,7 @@ final class StatusBarView: NSView {
 
         stack.addArrangedSubview(zoomLabel)
         stack.addArrangedSubview(positionLabel)
+        stack.addArrangedSubview(toolIndicatorLabel)
         stack.addArrangedSubview(spacer)
         stack.addArrangedSubview(docSizeLabel)
 
@@ -68,6 +73,7 @@ final class StatusBarView: NSView {
             zoomLabel.stringValue = ""
             positionLabel.stringValue = ""
             docSizeLabel.stringValue = ""
+            toolIndicatorLabel.isHidden = true
             return
         }
         var zoomText = "Zoom: \(s.zoomPercent)%"
@@ -81,5 +87,11 @@ final class StatusBarView: NSView {
             positionLabel.stringValue = "—"
         }
         docSizeLabel.stringValue = "\(s.documentSize.width) × \(s.documentSize.height)"
+        if s.stylusEraserTipEngaged {
+            toolIndicatorLabel.stringValue = "● Eraser (stylus tip)"
+            toolIndicatorLabel.isHidden = false
+        } else {
+            toolIndicatorLabel.isHidden = true
+        }
     }
 }

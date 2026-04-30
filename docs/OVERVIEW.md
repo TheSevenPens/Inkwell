@@ -33,4 +33,5 @@ See [`FUTURES.md`](FUTURES.md) for the full deferred-work list and architectural
 - [`PLAN.md`](PLAN.md) — phased implementation plan with per-phase status
 - [`FUTURES.md`](FUTURES.md) — things deferred to future releases
 - [`FILEFORMAT.md`](FILEFORMAT.md) — specification of the `.inkwell` native bundle format
+- [`UI_COMPONENTS.md`](UI_COMPONENTS.md) — catalog of reusable UI building blocks and the conventions they follow
 - [`PSD_FIDELITY.md`](PSD_FIDELITY.md) — what survives the round-trip through PSD

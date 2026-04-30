@@ -21,6 +21,11 @@ final class BrushPickerView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    /// Flip the picker's coordinate system so when it's used as the document
+    /// view of an NSScrollView, content anchors to the visual top of the
+    /// clip view rather than the bottom.
+    override var isFlipped: Bool { true }
+
     private func buildLayout() {
         stack = NSStackView()
         stack.orientation = .vertical
@@ -33,7 +38,8 @@ final class BrushPickerView: NSView {
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: topAnchor),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor)
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
 
         stack.addArrangedSubview(sectionLabel("Brushes"))
@@ -67,6 +73,15 @@ final class BrushPickerView: NSView {
             toolButtons.append((button: button, tool: def.tool))
         }
 
+        // Deselect: an *action* button (not a tool toggle). Dispatched up the
+        // responder chain so CanvasView.deselect(_:) handles it.
+        let deselectButton = makeActionIconButton(
+            symbolName: "xmark.circle",
+            tooltip: "Deselect (⌘D)",
+            action: #selector(CanvasView.deselect(_:))
+        )
+        stack.addArrangedSubview(deselectButton)
+
         stack.addArrangedSubview(spacer(height: 8))
         stack.addArrangedSubview(sectionLabel("Navigate"))
 
@@ -79,6 +94,29 @@ final class BrushPickerView: NSView {
         toolButtons.append((button: handButton, tool: .hand))
 
         refreshSelection()
+    }
+
+    /// Momentary-press icon button that fires `action` up the responder chain
+    /// (target = nil). Used for actions like Deselect, where there's no
+    /// "active state" to toggle.
+    private func makeActionIconButton(symbolName: String, tooltip: String, action: Selector) -> NSButton {
+        let button = NSButton()
+        button.title = ""
+        button.bezelStyle = .regularSquare
+        button.setButtonType(.momentaryPushIn)
+        button.imagePosition = .imageOnly
+        button.toolTip = tooltip
+        button.target = nil
+        button.action = action
+        let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+        if let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: tooltip)?
+            .withSymbolConfiguration(config) {
+            button.image = image
+        }
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        return button
     }
 
     private func makeIconButton(symbolName: String, tooltip: String, action: Selector) -> NSButton {

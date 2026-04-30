@@ -1,5 +1,12 @@
 import AppKit
 
+/// NSView with `isFlipped = true`. Used as a documentView inside NSScrollView
+/// so its content anchors at the visual top of the clip view rather than
+/// the bottom.
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 final class DocumentWindowController: NSWindowController {
     private weak var brushPicker: NSView?
     private weak var rightHost: NSView?
@@ -10,7 +17,21 @@ final class DocumentWindowController: NSWindowController {
 
     init(document: Document) {
         let canvasView = CanvasView(document: document)
-        let brushPicker = BrushPickerView()
+        let brushPickerInner = BrushPickerView()
+        brushPickerInner.translatesAutoresizingMaskIntoConstraints = false
+        // Wrap the brush picker in a vertical scroll view so the window can
+        // shrink below the picker's intrinsic ~410 pt minimum (e.g. macOS
+        // Window → Move & Resize → Top on a 13" display).
+        let brushPicker = NSScrollView()
+        brushPicker.translatesAutoresizingMaskIntoConstraints = false
+        brushPicker.hasVerticalScroller = true
+        brushPicker.hasHorizontalScroller = false
+        brushPicker.autohidesScrollers = true
+        brushPicker.borderType = .noBorder
+        brushPicker.drawsBackground = false
+        brushPicker.documentView = brushPickerInner
+        brushPickerInner.widthAnchor.constraint(equalTo: brushPicker.contentView.widthAnchor).isActive = true
+        brushPickerInner.topAnchor.constraint(equalTo: brushPicker.contentView.topAnchor).isActive = true
         let inspector = BrushInspectorView()
         let layerPanel = LayerPanelView()
         layerPanel.attach(canvas: document.canvas)
@@ -30,24 +51,45 @@ final class DocumentWindowController: NSWindowController {
                 )
         }
 
-        // Right sidebar.
-        let rightHost = NSView()
-        rightHost.translatesAutoresizingMaskIntoConstraints = false
-        rightHost.wantsLayer = true
-        rightHost.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        rightHost.addSubview(inspector)
-        rightHost.addSubview(layerPanel)
+        // Right sidebar. Wrapped in an NSScrollView so the brush inspector +
+        // layer panel can stay at their intrinsic content height while the
+        // window itself shrinks freely (e.g. macOS Window → Move & Resize →
+        // Top, which tiles the window to half-screen height). Without the
+        // scroll view, the right pane's intrinsic ~800 pt minimum would
+        // refuse the resize and the window would overflow the screen.
+        let rightContent = FlippedView()
+        rightContent.translatesAutoresizingMaskIntoConstraints = false
+        rightContent.wantsLayer = true
+        rightContent.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        rightContent.addSubview(inspector)
+        rightContent.addSubview(layerPanel)
         inspector.translatesAutoresizingMaskIntoConstraints = false
         layerPanel.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            inspector.topAnchor.constraint(equalTo: rightHost.topAnchor),
-            inspector.leadingAnchor.constraint(equalTo: rightHost.leadingAnchor),
-            inspector.trailingAnchor.constraint(equalTo: rightHost.trailingAnchor),
+            inspector.topAnchor.constraint(equalTo: rightContent.topAnchor),
+            inspector.leadingAnchor.constraint(equalTo: rightContent.leadingAnchor),
+            inspector.trailingAnchor.constraint(equalTo: rightContent.trailingAnchor),
             layerPanel.topAnchor.constraint(equalTo: inspector.bottomAnchor, constant: 4),
-            layerPanel.leadingAnchor.constraint(equalTo: rightHost.leadingAnchor),
-            layerPanel.trailingAnchor.constraint(equalTo: rightHost.trailingAnchor),
-            layerPanel.bottomAnchor.constraint(equalTo: rightHost.bottomAnchor)
+            layerPanel.leadingAnchor.constraint(equalTo: rightContent.leadingAnchor),
+            layerPanel.trailingAnchor.constraint(equalTo: rightContent.trailingAnchor),
+            layerPanel.bottomAnchor.constraint(equalTo: rightContent.bottomAnchor)
         ])
+
+        let rightHost = NSScrollView()
+        rightHost.translatesAutoresizingMaskIntoConstraints = false
+        rightHost.hasVerticalScroller = true
+        rightHost.hasHorizontalScroller = false
+        rightHost.autohidesScrollers = true
+        rightHost.borderType = .noBorder
+        rightHost.drawsBackground = true
+        rightHost.backgroundColor = .windowBackgroundColor
+        rightHost.documentView = rightContent
+        // Pin the document view's width and top to the scroll view's content
+        // view so there's no horizontal scroll and the document view's frame
+        // is unambiguous (translatesAutoresizingMaskIntoConstraints=false
+        // disables NSScrollView's automatic sizing).
+        rightContent.widthAnchor.constraint(equalTo: rightHost.contentView.widthAnchor).isActive = true
+        rightContent.topAnchor.constraint(equalTo: rightHost.contentView.topAnchor).isActive = true
 
         // Canvas area: debug bar (optional, top) + canvas (flex) + status bar (bottom).
         let canvasArea = NSView()

@@ -27,7 +27,7 @@ Once shipped, this also unlocks the timelapse playback UI (see "Timelapse playba
 - Floating-selection transforms (move / scale / rotate the selected pixels as a transient pseudo-layer with commit / cancel).
 - Per-selection feather slider (Gaussian blur applied to the mask).
 - Vector path retention for shape selections (rectangle / ellipse / polygonal lasso) — keeps marching ants crisp under transform and enables lossless transforms before commit.
-- Selection-state undo: selection edits (rect / ellipse / lasso, Select All, Invert, Deselect) aren't yet on the undo stack.
+- ~~Selection-state undo: selection edits (rect / ellipse / lasso, Select All, Invert, Deselect) aren't yet on the undo stack.~~ **Shipped:** all selection-mutating ops are now on the undo stack via `Document.registerSelectionUndo`.
 
 ### Phase 9 Pass 2 — layer-aware PSD round-trip
 
@@ -261,9 +261,16 @@ Several v1 behaviors rely on modifier keys that first-time users will not discov
 
 ---
 
-### Eraser-tip behavior surfacing
+### Eraser-tip behavior surfacing — shipped
 
-Decision 10's eraser-end-of-stylus behavior is industry standard but invisible until the user discovers their stylus has an eraser tip. The cursor or status bar should reflect the active tool clearly so the temporary tool switch is not a surprise.
+Decision 10's eraser-end-of-stylus behavior is now both **implemented** (it wasn't actually wired up before) and **surfaced**:
+
+- `CanvasView.tabletProximity(with:)` watches `pointingDeviceType == .eraser` on enter / leave events.
+- On engage we save the active brush index in `BrushPalette` and switch to the Eraser brush; brush picker and inspector reflect the swap.
+- Status bar shows a `● Eraser (stylus tip)` indicator (orange) while engaged.
+- On disengage we restore the previous brush, unless the user manually picked a different one mid-engagement (then we honor their choice and don't override).
+
+Remaining cosmetic gap: cursor preview itself doesn't change shape between pen-tip and eraser-tip strokes. The brush change drives the rendered stroke; cursor follows whatever the active brush's preview is. Probably good enough; revisit after launch if users find it confusing.
 
 ---
 
@@ -285,9 +292,9 @@ Phase 11's stroke-quality fix disables `NSEvent` mouse coalescing via the legacy
 
 ---
 
-### Per-sample command-buffer overhead at high stylus rates
+### Per-sample command-buffer overhead at high stylus rates — addressed
 
-Each `StampRenderer.applyStamp` dispatch commits its own command buffer with one render pass per affected tile. At 300 Hz with a tight-spacing brush like G-Pen, that's hundreds of command buffers per second during fast painting. Apple Silicon handles it today, but it's not optimal — batching multiple stamps into a single command buffer per stylus sample (one buffer with N render passes inside) would be the obvious next optimization if any latency, thermal, or scheduling issues surface.
+Both `StampRenderer` (bitmap) and `StrokeRibbonRenderer` (vector) now expose `beginBatch()` / `commitBatch()` and honor an active batch when encoding. `CanvasView` wraps each stroke-producing event handler (`mouseDown` / `mouseDragged` / `mouseUp` / `tabletPoint` / airbrush tick) in begin/commit pairs, so all stamps or capsules an event produces share a single `MTLCommandBuffer`. This was the fix for the bitmap stroke-stall bug at 300 Hz and is now applied symmetrically to the vector path so it can't regress there.
 
 ---
 

@@ -21,6 +21,7 @@ final class LayerPanelView: NSView {
     private var removeMaskButton: NSButton!
 
     private var refreshing = false
+    private var section: CollapsibleSection!
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -39,9 +40,7 @@ final class LayerPanelView: NSView {
     }
 
     private func buildLayout() {
-        let title = NSTextField(labelWithString: "Layers")
-        title.font = .boldSystemFont(ofSize: 12)
-        title.textColor = .secondaryLabelColor
+        section = CollapsibleSection(title: "Layers")
 
         // Edit-target row
         let editRow = NSStackView()
@@ -167,13 +166,14 @@ final class LayerPanelView: NSView {
         master.alignment = .leading
         master.distribution = .fill
         master.translatesAutoresizingMaskIntoConstraints = false
-        master.addArrangedSubview(title)
-        master.addArrangedSubview(editRow)
-        master.addArrangedSubview(opacityRow)
-        master.addArrangedSubview(blendRow)
-        master.addArrangedSubview(scrollView)
-        master.addArrangedSubview(layerToolbar)
-        master.addArrangedSubview(maskToolbar)
+        master.addArrangedSubview(section.header)
+        section.add(layerToolbar, to: master)
+        section.add(editRow, to: master)
+        section.add(opacityRow, to: master)
+        section.add(blendRow, to: master)
+        section.add(scrollView, to: master)
+        section.add(maskToolbar, to: master)
+        master.setCustomSpacing(8, after: layerToolbar)
         master.setCustomSpacing(8, after: blendRow)
         master.setCustomSpacing(6, after: scrollView)
 

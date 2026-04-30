@@ -8,6 +8,7 @@ final class BrushInspectorView: NSView {
     private var colorWell: NSColorWell!
     private var hexField: NSTextField!
     private var refreshing = false
+    private var section: CollapsibleSection!
 
     /// Built-in swatch palette. Phase 11 Pass 1 ships these only; user-saved
     /// swatches are a follow-up.
@@ -53,17 +54,15 @@ final class BrushInspectorView: NSView {
             stack.topAnchor.constraint(equalTo: topAnchor),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor)
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
 
-        let title = NSTextField(labelWithString: "Brush Settings")
-        title.font = NSFont.boldSystemFont(ofSize: 12)
-        title.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(title)
+        section = CollapsibleSection(title: "Brush Settings")
+        stack.addArrangedSubview(section.header)
 
         nameLabel = NSTextField(labelWithString: "")
         nameLabel.font = NSFont.systemFont(ofSize: 14, weight: .medium)
-        stack.addArrangedSubview(nameLabel)
+        section.add(nameLabel, to: stack)
 
         let colorRow = NSStackView()
         colorRow.orientation = .horizontal
@@ -88,7 +87,7 @@ final class BrushInspectorView: NSView {
         colorRow.addArrangedSubview(colorLabel)
         colorRow.addArrangedSubview(colorWell)
         colorRow.addArrangedSubview(hexField)
-        stack.addArrangedSubview(colorRow)
+        section.add(colorRow, to: stack)
 
         // Swatches: 12 built-in colors in a single row.
         let swatchRow = NSStackView()
@@ -101,16 +100,16 @@ final class BrushInspectorView: NSView {
             button.action = #selector(swatchClicked(_:))
             swatchRow.addArrangedSubview(button)
         }
-        stack.addArrangedSubview(swatchRow)
+        section.add(swatchRow, to: stack)
 
         addSliderRow(key: "size", label: "Size", min: 1, max: 80, fmt: "%.1f")
         addSliderRow(key: "hardness", label: "Hardness", min: 0, max: 1, fmt: "%.2f")
         addSliderRow(key: "spacing", label: "Spacing", min: 0.02, max: 0.6, fmt: "%.2f")
         addSliderRow(key: "opacity", label: "Opacity", min: 0, max: 1, fmt: "%.2f")
-        stack.addArrangedSubview(thinRule())
+        section.add(thinRule(), to: stack)
         addSliderRow(key: "p2size", label: "Press → Size", min: 0, max: 1, fmt: "%.2f")
         addSliderRow(key: "p2alpha", label: "Press → Opacity", min: 0, max: 1, fmt: "%.2f")
-        stack.addArrangedSubview(thinRule())
+        section.add(thinRule(), to: stack)
         addSliderRow(key: "tiltSize", label: "Tilt → Size", min: 0, max: 1, fmt: "%.2f")
         addSliderRow(key: "sizeJitter", label: "Size Jitter", min: 0, max: 0.5, fmt: "%.2f")
         addSliderRow(key: "alphaJitter", label: "Opacity Jitter", min: 0, max: 0.5, fmt: "%.2f")
@@ -125,7 +124,7 @@ final class BrushInspectorView: NSView {
             }
         }
         rows[key] = row
-        stack.addArrangedSubview(row)
+        section.add(row, to: stack)
         row.translatesAutoresizingMaskIntoConstraints = false
         row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
     }

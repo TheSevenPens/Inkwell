@@ -42,6 +42,8 @@ Sections covering installation, first-run setup, a quick-start tutorial, keyboar
 - Layer panel: outline view with eye toggle and editable name; drag-to-reorder within and into groups; "M" badge when a layer has a mask.
 - Reorder, rename, duplicate, delete layers; new layer / **new vector** / new group / duplicate / delete buttons in the panel toolbar.
 - Per-layer non-destructive masks (bitmap layers only — vector layers don't yet support masks): Add Mask / Remove Mask buttons; **Edit: [Layer | Mask]** toggle routes brush input.
+- The Layers panel (and the Brush Settings panel above it) is **collapsible** — click the disclosure triangle next to the section title to hide / show its contents.
+- Layer-action toolbar (**+ Layer**, **+ Vector**, **+ Group**, **Dup**, **Del**) sits directly under the Layers section title for fast access.
 - Blend modes: Normal, Multiply, Screen, Overlay (the full Photoshop set is a Phase 9 follow-up).
 
 **Deferred:** group masks, vector-layer masks, layer thumbnails in the panel, isolated group blending, per-stroke selection / move / delete on vector layers, soft-edged vector brushes (Marker/Airbrush as vector), vector eraser.
@@ -70,7 +72,7 @@ Brush settings (live-edited in the right inspector):
 - Apple Pencil via Sidecar.
 - Pressure, tilt, and stylus-tip-vs-eraser detection captured per sample.
 - Hot-plug detection (via `tabletProximity` events).
-- Eraser end of the stylus temporarily switches to the Eraser tool.
+- **Eraser end of the stylus** temporarily switches the active brush to **Eraser** while the eraser tip is in proximity. The brush picker, brush inspector, and a `● Eraser (stylus tip)` indicator in the status bar all reflect the swap. Lifting the eraser end restores the previous brush (unless you manually picked a different one mid-swap, in which case your choice is honored).
 
 ## Selections
 
@@ -80,10 +82,11 @@ Pick **Rectangle**, **Ellipse**, or **Lasso** under the **Selection** section in
 - **Live preview**: the marching-ants overlay updates as you drag.
 - **Marching ants** animate on committed selections (active or live preview).
 - **Constraint application**: every pixel-writing operation (brush stamp on a layer, brush stamp on a mask, eraser) multiplies by the selection mask at the canvas pixel.
-- Menu items: **Edit → Select All** (Cmd+A), **Deselect** (Cmd+D), **Invert Selection** (Cmd+Shift+I).
+- Menu items: **Edit → Select All** (Cmd+A), **Deselect** (Cmd+D), **Invert Selection** (Cmd+Shift+I). The Selection section in the left sidebar also has a **Deselect** action button (xmark icon).
 - Selections persist with the document across save and reload.
+- **Selection edits are on the undo stack**: rectangle / ellipse / lasso commits, Select All, Deselect, and Invert Selection can each be undone with Cmd+Z.
 
-**Deferred:** polygonal lasso, magic wand, color range tools; Quick Mask mode (paint the selection with a brush); floating-selection transforms (move / scale / rotate); per-selection feather slider; selection-state undo (selection edits aren't yet on the undo stack).
+**Deferred:** polygonal lasso, magic wand, color range tools; Quick Mask mode (paint the selection with a brush); floating-selection transforms (move / scale / rotate); per-selection feather slider.
 
 ## Color
 
@@ -117,6 +120,7 @@ At the bottom of the canvas:
 
 - **Zoom**: current zoom percentage. View rotation in degrees appears alongside when non-zero.
 - **Cursor position**: canvas-pixel X/Y under the cursor (`—` when off-canvas).
+- **Stylus tool indicator** (orange, only visible when active): `● Eraser (stylus tip)` while the stylus's eraser end is in tablet proximity.
 - **Document size**: pixel dimensions on the right.
 
 ## Editing

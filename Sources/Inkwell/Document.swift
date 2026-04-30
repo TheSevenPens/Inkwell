@@ -285,6 +285,36 @@ final class Document: NSDocument {
         }
     }
 
+    /// Register an undo step for a selection mutation. `before` and `after`
+    /// are full canvas-pixel byte arrays (or nil = no selection active).
+    /// Skips registration when the two states are equal.
+    func registerSelectionUndo(
+        before: [UInt8]?,
+        after: [UInt8]?,
+        actionName: String
+    ) {
+        guard let undoManager else { return }
+        if before == after { return }
+        undoManager.setActionName(actionName)
+        undoManager.registerUndo(withTarget: self) { [weak self] _ in
+            self?.applySelectionBytesAndRegisterInverse(bytes: before, actionName: actionName)
+        }
+    }
+
+    private func applySelectionBytesAndRegisterInverse(bytes: [UInt8]?, actionName: String) {
+        let previous = canvas.selection?.bytes
+        if let bytes {
+            canvas.replaceSelectionBytes(bytes)
+        } else {
+            canvas.deselect()
+        }
+        onCanvasChanged?()
+        undoManager?.setActionName(actionName)
+        undoManager?.registerUndo(withTarget: self) { [weak self] _ in
+            self?.applySelectionBytesAndRegisterInverse(bytes: previous, actionName: actionName)
+        }
+    }
+
     func registerMaskStrokeUndo(
         layerId: UUID,
         before: LayerMask.TileSnapshot,

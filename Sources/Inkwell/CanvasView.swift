@@ -39,11 +39,26 @@ final class CanvasView: MTKView {
 
     private var selectionGesture: SelectionGesture?
     private var preGestureSelectionBytes: [UInt8]?
+    /// Pre-gesture selection bytes for undo registration. Differs from
+    /// `preGestureSelectionBytes` (which substitutes zeros when no selection
+    /// was active for live-preview math): this stays nil so the undo entry
+    /// can restore the "no selection active" state distinctly.
+    private var preGestureSelectionForUndo: [UInt8]?
 
     private var lastSample: StylusSample?
     private var lastCursorWindow: CGPoint?
     private var airbrushTimer: Timer?
     private var antsTimer: Timer?
+
+    /// True while the stylus's eraser end is in tablet proximity. Set by
+    /// `tabletProximity(with:)`. While this is true, the active brush is
+    /// temporarily swapped to the Eraser per decision 10.
+    private var stylusEraserTipEngaged: Bool = false
+    /// Brush index in `BrushPalette.shared` that was active when the eraser
+    /// tip last engaged. Restored when the tip leaves proximity (unless the
+    /// user manually switched to a different brush mid-engagement, in which
+    /// case we honor their choice and don't override it).
+    private var brushIndexBeforeEraserSwap: Int?
 
     // Debug telemetry — populated from every input event the canvas sees.
     private var debugLastSource: DebugSnapshot.Source = .none
@@ -82,6 +97,10 @@ final class CanvasView: MTKView {
         var documentSize: (width: Int, height: Int)
         /// View rotation in degrees (CCW positive). 0 if no rotation applied.
         var rotationDegrees: Int
+        /// True while the stylus's eraser end is in tablet proximity. Status
+        /// bar renders an "Eraser" indicator when this is true so the
+        /// temporary tool switch isn't a surprise.
+        var stylusEraserTipEngaged: Bool
     }
 
     /// Snapshot of the latest input event for the debug toolbar. Updated on
@@ -328,6 +347,39 @@ final class CanvasView: MTKView {
     /// (or interleaved with) mouseDragged when mouse coalescing is disabled.
     /// Tracking them here ensures the debug rate counter sees every report,
     /// and the painting path can use them to fill in between mouseDragged events.
+    /// Stylus enters or leaves tablet proximity. The pointing-device-type
+    /// distinguishes the pen tip from the eraser end (decision 10). On
+    /// engagement we save the active brush index and switch to the Eraser;
+    /// on disengagement we restore it (unless the user manually picked a
+    /// different brush in the meantime — then we leave it alone).
+    override func tabletProximity(with event: NSEvent) {
+        let entering = event.isEnteringProximity
+        let isEraser = event.pointingDeviceType == .eraser
+        let newValue = entering && isEraser
+        guard newValue != stylusEraserTipEngaged else { return }
+
+        if newValue {
+            // Engage: switch to Eraser, remember what was active.
+            if let eraserIdx = BrushPalette.shared.brushes.firstIndex(where: { $0.id == "eraser" }),
+               BrushPalette.shared.activeIndex != eraserIdx {
+                brushIndexBeforeEraserSwap = BrushPalette.shared.activeIndex
+                BrushPalette.shared.setActiveIndex(eraserIdx)
+            }
+        } else {
+            // Disengage: restore only if Eraser is still active (user might
+            // have manually picked a different brush mid-engagement).
+            if let prev = brushIndexBeforeEraserSwap,
+               let eraserIdx = BrushPalette.shared.brushes.firstIndex(where: { $0.id == "eraser" }),
+               BrushPalette.shared.activeIndex == eraserIdx {
+                BrushPalette.shared.setActiveIndex(prev)
+            }
+            brushIndexBeforeEraserSwap = nil
+        }
+
+        stylusEraserTipEngaged = newValue
+        publishStatus(cursorWindow: lastCursorWindow)
+    }
+
     override func tabletPoint(with event: NSEvent) {
         recordEventForDebug(event)
         // If a stroke is in flight, feed this sample so we don't lose
@@ -335,7 +387,9 @@ final class CanvasView: MTKView {
         let sample = sampleFor(event: event)
         if vectorBuilder != nil {
             lastSample = sample
+            canvas.ribbonRenderer?.beginBatch()
             continueVectorStroke(at: sample)
+            canvas.ribbonRenderer?.commitBatch()
         } else if let emitter = emitter {
             lastSample = sample
             stampRenderer?.beginBatch()
@@ -359,7 +413,8 @@ final class CanvasView: MTKView {
             zoomPercent: zoomPct,
             canvasPosition: canvasPos,
             documentSize: (canvas.width, canvas.height),
-            rotationDegrees: normalizedDegrees
+            rotationDegrees: normalizedDegrees,
+            stylusEraserTipEngaged: stylusEraserTipEngaged
         ))
     }
 
@@ -426,12 +481,15 @@ final class CanvasView: MTKView {
                 return
             }
             let optionEraser = event.modifierFlags.contains(.option)
+            let forceErase = optionEraser || stylusEraserTipEngaged
             let sample = sampleFor(event: event)
             if canvas.activeVectorLayer != nil {
+                canvas.ribbonRenderer?.beginBatch()
                 beginVectorStroke(at: sample)
+                canvas.ribbonRenderer?.commitBatch()
             } else {
                 stampRenderer?.beginBatch()
-                beginStroke(at: sample, forceErase: optionEraser)
+                beginStroke(at: sample, forceErase: forceErase)
                 stampRenderer?.commitBatch()
             }
         case .hand:
@@ -459,7 +517,9 @@ final class CanvasView: MTKView {
             let sample = sampleFor(event: event)
             lastSample = sample
             if vectorBuilder != nil {
+                canvas.ribbonRenderer?.beginBatch()
                 continueVectorStroke(at: sample)
+                canvas.ribbonRenderer?.commitBatch()
             } else {
                 stampRenderer?.beginBatch()
                 emitter?.continueTo(sample)
@@ -480,7 +540,9 @@ final class CanvasView: MTKView {
         case .brush:
             let sample = sampleFor(event: event)
             if vectorBuilder != nil {
+                canvas.ribbonRenderer?.beginBatch()
                 endVectorStroke(at: sample)
+                canvas.ribbonRenderer?.commitBatch()
             } else {
                 stampRenderer?.beginBatch()
                 emitter?.end(sample)
@@ -761,6 +823,7 @@ final class CanvasView: MTKView {
 
     private func beginSelectionGesture(_ gesture: SelectionGesture) {
         selectionGesture = gesture
+        preGestureSelectionForUndo = canvas.selection?.bytes
         preGestureSelectionBytes = canvas.selection?.bytes
             ?? [UInt8](repeating: 0, count: canvas.width * canvas.height)
         renderSelectionPreview()
@@ -783,10 +846,14 @@ final class CanvasView: MTKView {
 
     private func commitSelectionGesture() {
         guard selectionGesture != nil else { return }
+        let before = preGestureSelectionForUndo
+        let after = canvas.selection?.bytes
         defer {
             selectionGesture = nil
             preGestureSelectionBytes = nil
+            preGestureSelectionForUndo = nil
         }
+        document?.registerSelectionUndo(before: before, after: after, actionName: "Selection")
         document?.updateChangeCount(.changeDone)
     }
 
@@ -867,17 +934,26 @@ final class CanvasView: MTKView {
     // MARK: - Selection menu actions (routed via responder chain)
 
     @objc override func selectAll(_ sender: Any?) {
+        let before = canvas.selection?.bytes
         canvas.selectAll()
+        let after = canvas.selection?.bytes
+        document?.registerSelectionUndo(before: before, after: after, actionName: "Select All")
         document?.updateChangeCount(.changeDone)
     }
 
     @objc func deselect(_ sender: Any?) {
+        let before = canvas.selection?.bytes
         canvas.deselect()
+        let after = canvas.selection?.bytes
+        document?.registerSelectionUndo(before: before, after: after, actionName: "Deselect")
         document?.updateChangeCount(.changeDone)
     }
 
     @objc func invertSelection(_ sender: Any?) {
+        let before = canvas.selection?.bytes
         canvas.invertSelection()
+        let after = canvas.selection?.bytes
+        document?.registerSelectionUndo(before: before, after: after, actionName: "Invert Selection")
         document?.updateChangeCount(.changeDone)
     }
 
@@ -1037,28 +1113,35 @@ final class CanvasView: MTKView {
         let chars = event.charactersIgnoringModifiers ?? ""
         // Backspace (keyCode 51) and Forward Delete (keyCode 117) → Edit → Clear.
         if event.keyCode == 51 || event.keyCode == 117 {
-            document?.clearAction(self)
+            if !event.isARepeat { document?.clearAction(self) }
             return
         }
-        if chars == " ", !event.isARepeat {
-            spaceHeld = true
-            cursorUpdate(with: event)
-            return
-        }
-        if (chars == "r" || chars == "R"), !event.isARepeat {
-            if event.modifierFlags.contains(.shift) {
-                // Shift+R: reset rotation to zero around view center.
-                let center = CGPoint(x: bounds.midX, y: bounds.midY)
-                viewTransform.setRotation(0, anchor: center)
-                needsDisplay = true
-                return
+        // Held-modifier keys (space → pan, r → rotate). We consume repeats too
+        // so the system doesn't beep at us via `super.keyDown` while the key
+        // is held down.
+        if chars == " " {
+            if !event.isARepeat {
+                spaceHeld = true
+                cursorUpdate(with: event)
             }
-            rHeld = true
-            cursorUpdate(with: event)
             return
         }
-        if chars == "\t", !event.isARepeat {
-            onTogglePanels?()
+        if chars == "r" || chars == "R" {
+            if !event.isARepeat {
+                if event.modifierFlags.contains(.shift) {
+                    // Shift+R: reset rotation to zero around view center.
+                    let center = CGPoint(x: bounds.midX, y: bounds.midY)
+                    viewTransform.setRotation(0, anchor: center)
+                    needsDisplay = true
+                } else {
+                    rHeld = true
+                    cursorUpdate(with: event)
+                }
+            }
+            return
+        }
+        if chars == "\t" {
+            if !event.isARepeat { onTogglePanels?() }
             return
         }
         super.keyDown(with: event)

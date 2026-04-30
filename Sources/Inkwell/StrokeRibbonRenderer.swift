@@ -104,6 +104,26 @@ final class StrokeRibbonRenderer {
     private let commandQueue: any MTLCommandQueue
     private let pipeline: any MTLRenderPipelineState
 
+    /// Active batch buffer. While non-nil, drawCapsule encodes into this
+    /// buffer instead of allocating a new one per call. Mirrors
+    /// `StampRenderer`'s batching: at high stylus rates the in-flight builder
+    /// produces many capsules per input event, and per-call command-buffer
+    /// commits would otherwise flood the GPU queue and stall presentation.
+    private var currentBatch: (any MTLCommandBuffer)?
+
+    /// Begin a capsule batch. While a batch is active, every drawCapsule call
+    /// encodes into a shared command buffer instead of committing per call.
+    func beginBatch() {
+        guard currentBatch == nil else { return }
+        currentBatch = commandQueue.makeCommandBuffer()
+    }
+
+    /// Commit the active batch (if any). Safe to call when no batch is active.
+    func commitBatch() {
+        currentBatch?.commit()
+        currentBatch = nil
+    }
+
     init(device: any MTLDevice, commandQueue: any MTLCommandQueue) throws {
         self.device = device
         self.commandQueue = commandQueue
@@ -195,7 +215,8 @@ final class StrokeRibbonRenderer {
         let densified = Self.densify(stroke)
         guard !densified.isEmpty else { return false }
         let tileRect = layer.canvasRect(for: coord)
-        guard let cb = commandQueue.makeCommandBuffer() else { return false }
+        let batched = currentBatch != nil
+        guard let cb = currentBatch ?? commandQueue.makeCommandBuffer() else { return false }
         let tile = layer.ensureTile(at: coord)
         let rpd = MTLRenderPassDescriptor()
         rpd.colorAttachments[0].texture = tile
@@ -243,7 +264,7 @@ final class StrokeRibbonRenderer {
         }
 
         encoder.endEncoding()
-        cb.commit()
+        if !batched { cb.commit() }
         return didDraw
     }
 
@@ -276,7 +297,8 @@ final class StrokeRibbonRenderer {
         )
         let tileSize = SIMD2<Float>(Float(Canvas.tileSize), Float(Canvas.tileSize))
 
-        guard let cb = commandQueue.makeCommandBuffer() else { return [] }
+        let batched = currentBatch != nil
+        guard let cb = currentBatch ?? commandQueue.makeCommandBuffer() else { return [] }
         var written: Set<TileCoord> = []
         for coord in coords {
             let tile = layer.ensureTile(at: coord)
@@ -302,7 +324,7 @@ final class StrokeRibbonRenderer {
             encoder.endEncoding()
             if drew { written.insert(coord) }
         }
-        cb.commit()
+        if !batched { cb.commit() }
         return written
     }
 
