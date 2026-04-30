@@ -11,8 +11,8 @@ import Metal
 /// (or for tile coords inside a masked layer where no mask tile is allocated yet).
 final class LayerMask {
     let device: any MTLDevice
-    let canvasWidth: Int
-    let canvasHeight: Int
+    private(set) var canvasWidth: Int
+    private(set) var canvasHeight: Int
 
     private var tiles: [TileCoord: any MTLTexture] = [:]
 
@@ -135,6 +135,81 @@ final class LayerMask {
                 withBytes: base,
                 bytesPerRow: bytesPerRow
             )
+        }
+    }
+
+    // MARK: - Whole-mask rebuild (Phase 10 document transforms)
+
+    /// Replace the mask's tile contents with a new single-channel flat image at the
+    /// given dimensions. Discards existing tiles. Tiles whose entire region is fully
+    /// white (255) are not allocated — that's the absent-tile convention.
+    func replaceWithImage(_ image: CGImage, newWidth: Int, newHeight: Int) {
+        canvasWidth = newWidth
+        canvasHeight = newHeight
+        tiles.removeAll(keepingCapacity: true)
+
+        let cs = CGColorSpaceCreateDeviceGray()
+        let info = CGImageAlphaInfo.none.rawValue
+        let bytesPerRow = newWidth
+        guard let flat = CGContext(
+            data: nil,
+            width: newWidth,
+            height: newHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: cs,
+            bitmapInfo: info
+        ) else { return }
+        // Initialize to white (fully visible), then overdraw with the input image.
+        flat.setFillColor(gray: 1.0, alpha: 1.0)
+        flat.fill(CGRect(x: 0, y: 0, width: newWidth, height: newHeight))
+        flat.draw(image, in: CGRect(x: 0, y: 0, width: newWidth, height: newHeight))
+        guard let flatData = flat.data else { return }
+        let flatBytes = flatData.assumingMemoryBound(to: UInt8.self)
+
+        for ty in 0..<tilesDown {
+            for tx in 0..<tilesAcross {
+                let originX = tx * Canvas.tileSize
+                let originY = ty * Canvas.tileSize
+                let tileW = min(Canvas.tileSize, newWidth - originX)
+                let tileH = min(Canvas.tileSize, newHeight - originY)
+                var allWhite = true
+                outer: for py in 0..<tileH {
+                    for px in 0..<tileW {
+                        let canvasX = originX + px
+                        let canvasY = originY + py
+                        let row = newHeight - 1 - canvasY
+                        let offset = row * bytesPerRow + canvasX
+                        if flatBytes[offset] != 255 {
+                            allWhite = false
+                            break outer
+                        }
+                    }
+                }
+                guard !allWhite else { continue }
+                let coord = TileCoord(x: tx, y: ty)
+                let tex = ensureTile(at: coord)
+                var tileBytes = [UInt8](repeating: 255, count: Canvas.tileSize * Canvas.tileSize)
+                for py in 0..<tileH {
+                    let canvasY = originY + py
+                    let row = newHeight - 1 - canvasY
+                    let tileRow = Canvas.tileSize - 1 - py
+                    for px in 0..<tileW {
+                        let canvasX = originX + px
+                        let srcOffset = row * bytesPerRow + canvasX
+                        let dstOffset = tileRow * Canvas.tileSize + px
+                        tileBytes[dstOffset] = flatBytes[srcOffset]
+                    }
+                }
+                tileBytes.withUnsafeBufferPointer { buf in
+                    tex.replace(
+                        region: MTLRegionMake2D(0, 0, Canvas.tileSize, Canvas.tileSize),
+                        mipmapLevel: 0,
+                        withBytes: buf.baseAddress!,
+                        bytesPerRow: Canvas.tileSize
+                    )
+                }
+            }
         }
     }
 }

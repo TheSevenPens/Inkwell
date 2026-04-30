@@ -13,8 +13,10 @@ final class BitmapLayer: LayerNode {
     var blendMode: LayerBlendMode = .normal
 
     let device: any MTLDevice
-    let canvasWidth: Int
-    let canvasHeight: Int
+    /// Mutable so document-level transforms (rotate / flip / resample) can update
+    /// the layer's coordinate system after rebuilding its tiles.
+    private(set) var canvasWidth: Int
+    private(set) var canvasHeight: Int
 
     /// Optional non-destructive mask. When present, painted via the same stamp
     /// pipeline targeted at the mask's `.r8Unorm` tiles; sampled at composite time
@@ -160,6 +162,81 @@ final class BitmapLayer: LayerNode {
                 withBytes: base,
                 bytesPerRow: bytesPerRow
             )
+        }
+    }
+
+    // MARK: - Whole-layer rebuild (Phase 10 document transforms)
+
+    /// Replace the layer's tile contents with a new flat image at the given dimensions.
+    /// Discards the existing tile dictionary and re-allocates only tiles whose region
+    /// has any non-zero alpha pixel in `image`.
+    func replaceWithImage(_ image: CGImage, newWidth: Int, newHeight: Int) {
+        canvasWidth = newWidth
+        canvasHeight = newHeight
+        tiles.removeAll(keepingCapacity: true)
+
+        let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+        let info = CGImageAlphaInfo.premultipliedLast.rawValue
+        let bytesPerRow = newWidth * 4
+        guard let flat = CGContext(
+            data: nil,
+            width: newWidth,
+            height: newHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: cs,
+            bitmapInfo: info
+        ) else { return }
+        flat.draw(image, in: CGRect(x: 0, y: 0, width: newWidth, height: newHeight))
+        guard let flatData = flat.data else { return }
+        let flatBytes = flatData.assumingMemoryBound(to: UInt8.self)
+
+        for ty in 0..<tilesDown {
+            for tx in 0..<tilesAcross {
+                let originX = tx * Canvas.tileSize
+                let originY = ty * Canvas.tileSize
+                let tileW = min(Canvas.tileSize, newWidth - originX)
+                let tileH = min(Canvas.tileSize, newHeight - originY)
+                var hasContent = false
+                outer: for py in 0..<tileH {
+                    for px in 0..<tileW {
+                        let canvasX = originX + px
+                        let canvasY = originY + py
+                        let row = newHeight - 1 - canvasY
+                        let offset = row * bytesPerRow + canvasX * 4 + 3
+                        if flatBytes[offset] != 0 {
+                            hasContent = true
+                            break outer
+                        }
+                    }
+                }
+                guard hasContent else { continue }
+                let coord = TileCoord(x: tx, y: ty)
+                let tex = ensureTile(at: coord)
+                var tileBytes = [UInt8](repeating: 0, count: Canvas.tileSize * Canvas.tileSize * 4)
+                for py in 0..<tileH {
+                    let canvasY = originY + py
+                    let row = newHeight - 1 - canvasY
+                    let tileRow = Canvas.tileSize - 1 - py
+                    for px in 0..<tileW {
+                        let canvasX = originX + px
+                        let srcOffset = row * bytesPerRow + canvasX * 4
+                        let dstOffset = tileRow * (Canvas.tileSize * 4) + px * 4
+                        tileBytes[dstOffset + 0] = flatBytes[srcOffset + 0]
+                        tileBytes[dstOffset + 1] = flatBytes[srcOffset + 1]
+                        tileBytes[dstOffset + 2] = flatBytes[srcOffset + 2]
+                        tileBytes[dstOffset + 3] = flatBytes[srcOffset + 3]
+                    }
+                }
+                tileBytes.withUnsafeBufferPointer { buf in
+                    tex.replace(
+                        region: MTLRegionMake2D(0, 0, Canvas.tileSize, Canvas.tileSize),
+                        mipmapLevel: 0,
+                        withBytes: buf.baseAddress!,
+                        bytesPerRow: Canvas.tileSize * 4
+                    )
+                }
+            }
         }
     }
 }

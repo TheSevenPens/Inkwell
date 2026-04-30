@@ -106,6 +106,24 @@ final class Document: NSDocument {
         }
     }
 
+    // MARK: - Image transforms (Phase 10 Pass 1)
+
+    @objc func imageRotate180(_ sender: Any?) { applyImageTransform(.rotate180) }
+    @objc func imageRotate90CW(_ sender: Any?) { applyImageTransform(.rotate90CW) }
+    @objc func imageRotate90CCW(_ sender: Any?) { applyImageTransform(.rotate90CCW) }
+    @objc func imageFlipHorizontal(_ sender: Any?) { applyImageTransform(.flipHorizontal) }
+    @objc func imageFlipVertical(_ sender: Any?) { applyImageTransform(.flipVertical) }
+
+    private func applyImageTransform(_ kind: ImageTransform) {
+        canvas.applyImageTransform(kind)
+        // Per-tile undo snapshots from before the transform may reference
+        // tiles that no longer exist at the new dimensions; clearing the
+        // undo stack is the conservative choice for Pass 1. Document-level
+        // undo is a Pass 2 follow-up.
+        undoManager?.removeAllActions()
+        updateChangeCount(.changeDone)
+    }
+
     private func runExportPanel(
         typeName: String,
         contentType: UTType,

@@ -16,8 +16,10 @@ final class Canvas {
     static let tileSize: Int = 256
     static let paperColor: SIMD4<Float> = SIMD4(0.96, 0.95, 0.92, 1.0)
 
-    let width: Int
-    let height: Int
+    /// Mutable so document-level transforms (rotate / flip / resample) can swap
+    /// dimensions on a 90° rotation, etc. Mutate only via `applyImageTransform(_:)`.
+    var width: Int
+    var height: Int
     let device: any MTLDevice
     let commandQueue: any MTLCommandQueue
 
@@ -32,7 +34,7 @@ final class Canvas {
 
     /// Document-level selection mask. `nil` when no selection is active —
     /// stamp pipelines treat the whole canvas as selected.
-    private(set) var selection: Selection?
+    var selection: Selection?
 
     private var observers: [() -> Void] = []
 
@@ -60,7 +62,9 @@ final class Canvas {
         observers.append(block)
     }
 
-    private func notifyChanged() {
+    /// Internal so extensions in other files (e.g. CanvasTransforms) can fire it
+    /// after modifying canvas state.
+    func notifyChanged() {
         observers.forEach { $0() }
     }
 

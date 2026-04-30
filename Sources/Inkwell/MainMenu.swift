@@ -171,6 +171,38 @@ func installMainMenu() {
     editItem.submenu = editMenu
     mainMenu.addItem(editItem)
 
+    // Image menu (Phase 10 — document-level transforms)
+    let imageItem = NSMenuItem()
+    let imageMenu = NSMenu(title: "Image")
+    imageMenu.addItem(
+        withTitle: "Rotate 180°",
+        action: #selector(Document.imageRotate180(_:)),
+        keyEquivalent: ""
+    )
+    imageMenu.addItem(
+        withTitle: "Rotate 90° CW",
+        action: #selector(Document.imageRotate90CW(_:)),
+        keyEquivalent: ""
+    )
+    imageMenu.addItem(
+        withTitle: "Rotate 90° CCW",
+        action: #selector(Document.imageRotate90CCW(_:)),
+        keyEquivalent: ""
+    )
+    imageMenu.addItem(.separator())
+    imageMenu.addItem(
+        withTitle: "Flip Horizontal",
+        action: #selector(Document.imageFlipHorizontal(_:)),
+        keyEquivalent: ""
+    )
+    imageMenu.addItem(
+        withTitle: "Flip Vertical",
+        action: #selector(Document.imageFlipVertical(_:)),
+        keyEquivalent: ""
+    )
+    imageItem.submenu = imageMenu
+    mainMenu.addItem(imageItem)
+
     // View menu
     let viewItem = NSMenuItem()
     let viewMenu = NSMenu(title: "View")
