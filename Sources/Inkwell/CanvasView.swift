@@ -30,6 +30,10 @@ final class CanvasView: MTKView {
     private var strokeAffectedCoords: Set<TileCoord> = []
 
     private var selectionGesture: SelectionGesture?
+    /// Selection bytes captured at gesture start — the baseline that the in-progress
+    /// shape combines with on every drag update. Lets us show a live preview that
+    /// reflects the current Shift/Option arithmetic without compounding.
+    private var preGestureSelectionBytes: [UInt8]?
 
     private var lastSample: StylusSample?
     private var airbrushTimer: Timer?
@@ -262,6 +266,7 @@ final class CanvasView: MTKView {
             stopAirbrushTimer()
             commitUndoIfNeeded()
         case .selectRectangle, .selectEllipse, .selectLasso:
+            updateSelectionGesture(with: canvasPointForEvent(event))
             commitSelectionGesture()
         }
     }
@@ -420,6 +425,9 @@ final class CanvasView: MTKView {
 
     private func beginSelectionGesture(_ gesture: SelectionGesture) {
         selectionGesture = gesture
+        preGestureSelectionBytes = canvas.selection?.bytes
+            ?? [UInt8](repeating: 0, count: canvas.width * canvas.height)
+        renderSelectionPreview()
     }
 
     private func updateSelectionGesture(with point: CGPoint) {
@@ -434,65 +442,96 @@ final class CanvasView: MTKView {
             g = .lasso(points: points, op: op)
         }
         selectionGesture = g
-        // No live preview in Phase 7 Pass 1; commit on mouseUp.
+        renderSelectionPreview()
     }
 
     private func commitSelectionGesture() {
-        guard let g = selectionGesture else { return }
-        defer { selectionGesture = nil }
-        guard let document else { return }
-        switch g {
-        case .rectangle(let start, let current, let op):
-            let rect = CGRect(
-                x: min(start.x, current.x),
-                y: min(start.y, current.y),
-                width: abs(current.x - start.x),
-                height: abs(current.y - start.y)
-            )
-            guard rect.width >= 1, rect.height >= 1 else { return }
-            applySelectionShape(.rectangle(rect: rect), op: op)
-        case .ellipse(let start, let current, let op):
-            let rect = CGRect(
-                x: min(start.x, current.x),
-                y: min(start.y, current.y),
-                width: abs(current.x - start.x),
-                height: abs(current.y - start.y)
-            )
-            guard rect.width >= 1, rect.height >= 1 else { return }
-            applySelectionShape(.ellipse(rect: rect), op: op)
-        case .lasso(let points, let op):
-            guard points.count >= 3 else { return }
-            let path = CGMutablePath()
-            path.move(to: points[0])
-            for p in points.dropFirst() { path.addLine(to: p) }
-            path.closeSubpath()
-            applySelectionShape(.path(path), op: op)
+        guard selectionGesture != nil else { return }
+        defer {
+            selectionGesture = nil
+            preGestureSelectionBytes = nil
         }
-        document.updateChangeCount(.changeDone)
+        // Final state was already painted into canvas.selection by the last
+        // renderSelectionPreview call. Just mark the document dirty.
+        document?.updateChangeCount(.changeDone)
     }
 
-    private enum Shape {
-        case rectangle(rect: CGRect)
-        case ellipse(rect: CGRect)
-        case path(CGPath)
-    }
-
-    private func applySelectionShape(_ shape: Shape, op: Selection.Op) {
+    /// Re-render the live preview by combining `preGestureSelectionBytes` (baseline)
+    /// with the in-progress shape per the gesture's op, then writing into
+    /// `canvas.selection` directly.
+    private func renderSelectionPreview() {
+        guard let g = selectionGesture, let baseline = preGestureSelectionBytes else { return }
         let scratch = canvas.selection ?? Selection(
             device: canvas.device,
             canvasWidth: canvas.width,
             canvasHeight: canvas.height
         )
-        let bytes: [UInt8]
-        switch shape {
-        case .rectangle(let rect):
-            bytes = scratch.rasterizeRect(rect)
-        case .ellipse(let rect):
-            bytes = scratch.rasterizeEllipse(in: rect)
-        case .path(let path):
-            bytes = scratch.rasterizePath(path)
+        let shapeBytes: [UInt8]?
+        let op: Selection.Op
+        switch g {
+        case .rectangle(let start, let current, let theOp):
+            let rect = CGRect(
+                x: min(start.x, current.x),
+                y: min(start.y, current.y),
+                width: abs(current.x - start.x),
+                height: abs(current.y - start.y)
+            )
+            shapeBytes = (rect.width >= 1 && rect.height >= 1) ? scratch.rasterizeRect(rect) : nil
+            op = theOp
+        case .ellipse(let start, let current, let theOp):
+            let rect = CGRect(
+                x: min(start.x, current.x),
+                y: min(start.y, current.y),
+                width: abs(current.x - start.x),
+                height: abs(current.y - start.y)
+            )
+            shapeBytes = (rect.width >= 1 && rect.height >= 1) ? scratch.rasterizeEllipse(in: rect) : nil
+            op = theOp
+        case .lasso(let points, let theOp):
+            if points.count >= 2 {
+                let path = CGMutablePath()
+                path.move(to: points[0])
+                for p in points.dropFirst() { path.addLine(to: p) }
+                path.closeSubpath()
+                shapeBytes = scratch.rasterizePath(path)
+            } else {
+                shapeBytes = nil
+            }
+            op = theOp
         }
-        canvas.applySelection(shape: bytes, op: op)
+
+        let combined: [UInt8]
+        if let shape = shapeBytes {
+            combined = combine(baseline: baseline, shape: shape, op: op)
+        } else {
+            // Degenerate shape (zero size, too few lasso points) — preview the baseline.
+            combined = baseline
+        }
+        canvas.replaceSelectionBytes(combined)
+    }
+
+    private func combine(baseline: [UInt8], shape: [UInt8], op: Selection.Op) -> [UInt8] {
+        precondition(baseline.count == shape.count)
+        var out = [UInt8](repeating: 0, count: baseline.count)
+        switch op {
+        case .replace:
+            return shape
+        case .add:
+            for i in 0..<out.count { out[i] = max(baseline[i], shape[i]) }
+        case .subtract:
+            for i in 0..<out.count {
+                let s = Int(shape[i])
+                let c = Int(baseline[i])
+                out[i] = UInt8(max(0, c - s))
+            }
+        case .intersect:
+            for i in 0..<out.count {
+                let a = Int(baseline[i])
+                let b = Int(shape[i])
+                out[i] = UInt8((a * b + 127) / 255)
+            }
+        }
+        return out
     }
 
     // MARK: - Selection menu actions (routed via responder chain)
