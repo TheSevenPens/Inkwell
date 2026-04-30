@@ -28,10 +28,28 @@ See [`FUTURES.md`](FUTURES.md) for the full deferred-work list and architectural
 
 ## Supporting docs
 
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) — components, roles, relationships, and key technical decisions
+**Architecture & subsystems**
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — index of numbered architectural decisions across the corpus in `arch/`
+- [`design/README.md`](design/README.md) — subsystem design docs (tiles, compositor, strokes, coordinates, undo, color)
+
+**Contributor onboarding**
+- [`DEV_SETUP.md`](DEV_SETUP.md) — local build / run / debug
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — branch / PR workflow and style
+- [`TESTING.md`](TESTING.md) — testing strategy and manual scenarios
+
+**Engineering contracts**
+- [`PERFORMANCE.md`](PERFORMANCE.md) — perf targets and profiling workflow
+- [`THREADING_MODEL.md`](THREADING_MODEL.md) — concurrency rules for contributors
+- [`UNDO_GUARANTEES.md`](UNDO_GUARANTEES.md) — policy for what must be undoable
+- [`UI_STATE_MODEL.md`](UI_STATE_MODEL.md) — tool / modifier state machine
+
+**References**
 - [`USERMANUAL.md`](USERMANUAL.md) — user-facing feature reference
 - [`PLAN.md`](PLAN.md) — phased implementation plan with per-phase status
 - [`FUTURES.md`](FUTURES.md) — things deferred to future releases
-- [`FILEFORMAT.md`](FILEFORMAT.md) — specification of the `.inkwell` native bundle format
-- [`UI_COMPONENTS.md`](UI_COMPONENTS.md) — catalog of reusable UI building blocks and the conventions they follow
+- [`ROADMAP_OWNERSHIP.md`](ROADMAP_OWNERSHIP.md) — `FUTURES.md` items mapped to code entry points
+- [`SCHEMA_REFERENCE.md`](SCHEMA_REFERENCE.md) — `.inkwell` schema cheat-sheet
+- [`FILEFORMAT.md`](FILEFORMAT.md) — full `.inkwell` byte-level specification
+- [`EXPORT_IMPORT_GUIDE.md`](EXPORT_IMPORT_GUIDE.md) — PNG / JPEG / PSD interop
 - [`PSD_FIDELITY.md`](PSD_FIDELITY.md) — what survives the round-trip through PSD
+- [`UI_COMPONENTS.md`](UI_COMPONENTS.md) — catalog of reusable UI building blocks

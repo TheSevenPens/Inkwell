@@ -58,6 +58,21 @@ The architecture corpus answers *why* the code is the way it is. The subsystem d
 - [`design/UNDO.md`](design/UNDO.md) — `NSUndoManager` integration, the inverse-snapshot pattern, what is and isn't undoable.
 - [`design/COLOR.md`](design/COLOR.md) — Premultiplied alpha invariant, gamma-space blending, sRGB-everywhere reality vs. P3 architectural intent.
 
+## Contributor docs
+
+Onboarding, process, and engineering contracts. Read these when joining the project or before opening a PR.
+
+- [`DEV_SETUP.md`](DEV_SETUP.md) — Local build / run / debug for first-time contributors.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — Branch / PR workflow, style, and review expectations.
+- [`TESTING.md`](TESTING.md) — Test strategy and the manual scenario list.
+- [`PERFORMANCE.md`](PERFORMANCE.md) — Latency / frame-time / memory targets and profiling workflow.
+- [`THREADING_MODEL.md`](THREADING_MODEL.md) — Concurrency contract: what runs where, safe vs. unsafe patterns.
+- [`UNDO_GUARANTEES.md`](UNDO_GUARANTEES.md) — Policy for what edits must be undoable; today's gaps.
+- [`UI_STATE_MODEL.md`](UI_STATE_MODEL.md) — Tool / modifier state machine and persisted UI state.
+- [`SCHEMA_REFERENCE.md`](SCHEMA_REFERENCE.md) — `.inkwell` field dictionary cheat-sheet (full spec in `FILEFORMAT.md`).
+- [`EXPORT_IMPORT_GUIDE.md`](EXPORT_IMPORT_GUIDE.md) — PNG / JPEG / PSD pipelines, color profiles, round-trip validation.
+- [`ROADMAP_OWNERSHIP.md`](ROADMAP_OWNERSHIP.md) — Reverse index from `FUTURES.md` items to the code subsystem that owns them.
+
 ## Companion docs
 
 - [`OVERVIEW.md`](OVERVIEW.md) — product-level summary; the "what we're building" doc.
