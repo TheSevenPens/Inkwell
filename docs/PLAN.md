@@ -1,8 +1,16 @@
 # Inkwell Implementation Plan
 
-This document proposes a phased path from zero to a shippable v1 of Inkwell. The guiding principle is **build something small that works, then add incrementally**. Every phase ends with a runnable, useful app — not a half-implemented engine.
+This document proposes a phased path from zero to a shipped Inkwell. The guiding principle is **build something small that works, then add incrementally**. Every phase ends with a runnable, useful app — not a half-implemented engine.
 
 The plan is *delivery order*, not *redesign*. The architectural decisions in `ARCHITECTURE.md` are committed; phases describe the order in which we realize them.
+
+### Release milestones
+
+| Milestone | Purpose |
+|-----------|---------|
+| **V1** | Internal release shared with a limited, special audience. Primary goal: gather feedback and surface issues. Not a public launch. |
+| **V2** | Add missing features and address feedback from V1. Substantially more complete product. |
+| **V3** | Public launch on the Mac App Store. |
 
 ---
 
@@ -22,7 +30,9 @@ The plan is *delivery order*, not *redesign*. The architectural decisions in `AR
 | 9     | Export and import              | ✅ Pass 1 (flat PSD; layer-aware deferred) |
 | 10    | Document operations            | ✅ Pass 1 (rotate / flip; scale + resize + new-doc dialog deferred) |
 | 11    | Color, swatches, polish        | ✅ Pass 1 (status bar / swatches / hex; custom picker + prefs deferred) |
-| 12    | Pre-launch hardening           | ⏳ Not started                 |
+| 12    | V1 — Internal release          | ⏳ Not started                 |
+| 13    | V2 — Missing features          | ⏳ Not started                 |
+| 14    | V3 — App Store launch          | ⏳ Not started                 |
 
 Pass-2 deferrals are tracked in [`FUTURES.md`](FUTURES.md). Architectural decisions remain stable across passes; deferrals are scope, not redesign.
 
@@ -243,25 +253,58 @@ Pass-2 deferrals are tracked in [`FUTURES.md`](FUTURES.md). Architectural decisi
 
 ---
 
-## Phase 12 — Pre-launch hardening ⏳
+## Phase 12 — V1 Internal Release ⏳
 
-**Goal.** Ready to ship.
+**Goal.** A signed, distributable build delivered to a small invited audience for feedback and issue discovery. This is *not* a public launch — the bar is "runs reliably on someone else's Mac and is worth giving feedback on," not "ready for the App Store."
 
 **Scope.**
+- Code signing and notarization (required for the build to run on anyone else's machine).
+- Distribution packaging as a DMG (the simplest hand-off artifact).
+- App icon (the app needs to look like a real app, even for internal testers).
+- Final brush asset set (tip textures and presets finalized; this is a core quality signal).
+- Final pass on [`FILEFORMAT.md`](FILEFORMAT.md) and the [`PSD_FIDELITY.md`](PSD_FIDELITY.md) table (keep documentation honest before sharing with others).
+
+**Explicitly deferred to V2.**
 - First-launch onboarding flow.
 - Crash reporting integration.
-- Code signing and notarization (via Xcode once installed).
-- Distribution packaging (DMG; Mac App Store path is a separate decision).
-- Final brush asset set finalized (tip textures, presets).
-- App icon and marketing assets.
-- User manual completion: installation, tutorial, and feature walkthroughs added to [`USERMANUAL.md`](USERMANUAL.md).
-- Final pass on [`FILEFORMAT.md`](FILEFORMAT.md) and the [`PSD_FIDELITY.md`](PSD_FIDELITY.md) table.
+- User manual.
+- Marketing assets.
 
-**End state.** Inkwell v1 is shippable.
+**End state.** A notarized DMG is in the hands of a small internal audience. Feedback collection begins.
 
 ---
 
-## Out of scope for v1
+## Phase 13 — V2 Missing Features ⏳
+
+**Goal.** Address the gaps surfaced by V1 feedback and add the features that were deliberately deferred from the internal release.
+
+**Scope.**
+- First-launch onboarding flow (guided introduction for new users).
+- Crash reporting integration (so issues from a broader audience are captured automatically).
+- User manual completion: installation, tutorial, and feature walkthroughs added to [`USERMANUAL.md`](USERMANUAL.md).
+- Address high-priority feedback items from the V1 internal release.
+- Selected items from [`FUTURES.md`](FUTURES.md) as prioritized after V1 feedback (exact list TBD post-V1).
+
+**End state.** A substantially more complete product, ready to be evaluated for App Store submission.
+
+---
+
+## Phase 14 — V3 App Store Launch ⏳
+
+**Goal.** Ship Inkwell publicly on the Mac App Store.
+
+**Scope.**
+- Mac App Store provisioning (bundle ID, entitlements, sandbox audit).
+- App Store Connect setup: app record, screenshots, description, keywords, privacy manifest.
+- Marketing assets (icon variants, banner, promotional copy).
+- Final compliance review (App Store Review Guidelines, notarization for direct distribution as well).
+- Resolve any issues raised during App Store review.
+
+**End state.** Inkwell is live on the Mac App Store.
+
+---
+
+## Out of scope for V1 / tracked for later
 
 Tracked in [`FUTURES.md`](FUTURES.md):
 
