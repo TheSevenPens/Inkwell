@@ -84,6 +84,8 @@ The Inkwell engine adopts the following color and blending model for all interna
 - **Blend math:** Performed in gamma-encoded space (sRGB-style transfer curve) by default, matching Photoshop's blend-mode behavior. A "linear blending" option may be added later as a per-document opt-in but is not part of v1.
 - **Color profile handling:** Imported PNG, JPG, and PSD content is converted from its embedded profile (or assumed sRGB if none) into the working Display P3 space. Exported files are tagged with the appropriate ICC profile (P3 by default, sRGB on user request, with gamut mapping where needed).
 
+> **Current implementation.** Premultiplied alpha and gamma-space blending are live. **Display P3 working space and 16-bit tile precision are deferred** — the engine currently operates in sRGB with `.rgba8Unorm` (8-bit per channel) tile storage throughout. See [`design/COLOR.md`](../../design/COLOR.md) for the full gap summary and [`FUTURES.md`](../../FUTURES.md) under "Phase 9 Pass 2 — Display P3 working color space + gamut mapping" for the roadmap entry.
+
 ### Context
 
 Color and blending choices touch every pixel the engine produces. They determine what the user's brush looks like on screen, how stacked translucent strokes accumulate, how blend modes behave, what is preserved on round-trip through PSD, and what happens when the document leaves Inkwell for a destination with a different color expectation. Reversing these choices later forces pipeline-wide changes to stamp output, tile format, compositing shaders, and import/export — so it is worth making them deliberately.
@@ -201,6 +203,8 @@ The held-modifier tool switches (Cmd → eyedropper, Opt → eraser, Tab → pan
 - **The canvas view holds the view transform and is the input authority.** All input events get transformed at the canvas layer; nothing downstream sees window coordinates.
 - **The stroke processor receives canvas-pixel coordinates only.** It is unaware of the view transform, which means brush sizes and spacing are always in canvas pixels (matching decision 7's "DPI is metadata-only, brush sizes are pixels").
 - **The stylus sample buffer for an in-flight stroke survives navigation gestures.** Pause and resume operate on the buffer, not on a freshly-started stroke.
+
+  > **Implementation note.** The shipped code is simpler than "pause and resume" implies. Because `sampleFor(event:)` converts stylus positions to canvas-pixel coordinates immediately using the current view transform, in-flight navigation (which only mutates the view transform) does not disturb the stroke buffer at all. The next sample is converted with the updated transform and lands at the correct canvas position automatically. There is no explicit pause/resume state machine. See [`design/COORDINATES.md`](../../design/COORDINATES.md) for the coordinate-space explanation.
 - **The R-key rotate hotkey reserves R from the tool keymap.** Future tools that might want R need a different binding.
 - **The cursor preview reflects view rotation.** When the canvas is rotated, the brush preview and tilt indicators rotate with it, so the user sees the brush in canvas-relative orientation.
 - **The compositor receives the view transform per frame.** Used for the final blit from canvas-space tiles to window-space pixels, including any rotation and zoom.

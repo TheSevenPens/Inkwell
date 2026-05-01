@@ -76,7 +76,7 @@ xcrun xctrace record --template "Allocations" --launch -- ./build/Inkwell.app/Co
 - **Compositor**: dominated by tile fragment shader's framebuffer-fetch blend math. ~5–20 µs per tile draw on Apple Silicon, so a viewport with 16 visible tiles is ~80–320 µs. Negligible.
 - **Stamp dispatch**: one render pass per affected tile per stamp. Per-event batching keeps the command-buffer commit rate bounded; without it, 300 Hz × tight Catmull-Rom densification (~10 substamps) × multiple-tile-per-stamp would saturate the command queue (this is the bug we fixed; see commit history for `c579bae`).
 - **Vector ribbon dispatch**: same per-event batching pattern, applied symmetrically.
-- **Undo capture**: per-tile snapshot is `MTLTexture.getBytes` × dirty-tile-count, executed on the main thread at stroke commit. Bytes are uncompressed `Data` today.
+- **Undo capture**: per-tile snapshot is `MTLTexture.getBytes` × dirty-tile-count, executed on the main thread at stroke commit. Bytes are uncompressed `Data` today. Each `getBytes` call **stalls the main thread** until any in-flight GPU writes to those tiles complete. The stall is bounded by the GPU's command-buffer drain time — typically sub-millisecond for the tile count a single stroke touches — but adds measurable latency at gesture commit for wide-area strokes that dirty many tiles.
 
 ### Where we don't spend time
 

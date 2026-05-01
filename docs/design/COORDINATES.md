@@ -10,7 +10,7 @@ For the *why* of cursor-anchored zoom and a single transform matrix, see [`arch/
 
 | Space | Origin | Y direction | Units | Used by |
 |---|---|---|---|---|
-| **Canvas pixels** | top-left of canvas | down | pixels | Layer state, brush dispatch, selection bytes, file format |
+| **Canvas pixels** | bottom-left of canvas | up | pixels | Layer state, brush dispatch, selection bytes, file format |
 | **Tile-local pixels** | bottom-left of one 256×256 tile | up | pixels | Stamp shader internals (Metal NDC convention) |
 | **Tile data bytes** | top of tile region | down | bytes | `BitmapLayer.readTileBytes`, `tiles.bin` |
 | **Window points** | view top-left (or bottom-left, depending on flippedness) | depends | points | Mouse / stylus events from AppKit |

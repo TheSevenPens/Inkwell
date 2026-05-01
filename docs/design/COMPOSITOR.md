@@ -80,8 +80,10 @@ return float4(outRgb, outA);
 
 Notes:
 - Tile data is **premultiplied**, so we divide by alpha before the blend math and re-premultiply when writing back.
+- **Layer opacity** is folded into `src` before the blend-mode branches. The shader scales `src` by the per-tile opacity uniform — `src *= layerOpacity` — so that both `src.rgb` and `src.a` already reflect the layer's translucency when the formula runs. The final Porter-Duff composite then treats that scaled value as the source.
 - The "outside" terms are necessary because blend modes only apply where both layers have coverage; outside that overlap, source-over rules.
 - Only Normal/Multiply/Screen/Overlay are wired. The full Photoshop set is a Phase 9 follow-up — see [`PSD_FIDELITY.md`](../PSD_FIDELITY.md) and [`FUTURES.md`](../FUTURES.md).
+- The Overlay implementation (`2*src*dst` / `1 - 2*(1-src)*(1-dst)`) matches the W3C/Photoshop specification exactly. Hard Light uses the same formula with `src` and `dst` swapped — keep this in mind when wiring the full blend-mode set.
 - `LayerBlendMode.shaderIndex` ([LayerNode.swift](../../Sources/Inkwell/LayerNode.swift)) is the int the shader branches on. Add a case ⇒ extend the enum, the index, *and* the shader.
 
 ---
@@ -206,5 +208,5 @@ See [`STROKES.md`](STROKES.md) for that pipeline.
 
 - **Pass-through groups only.** Group `blendMode` and `opacity` multiply through to children, but the group does not composite into an isolated buffer. Photoshop-style "isolated group blend" is a Phase 4 follow-up.
 - **No layer caching.** Every frame re-runs the whole composite from the bottom up. There's no "the bottom 3 layers haven't changed, cache their composite" optimization. Today this is fine because tile-quad draws are cheap; if a document grows past, say, 50 layers it'd be worth profiling.
-- **Drawable pixel format is hardcoded** `bgra8Unorm` ([CanvasView.swift](../../Sources/Inkwell/CanvasView.swift), `colorPixelFormat`). HDR / wide-gamut presentation is a Display P3 follow-up (decision 6).
+- **Drawable pixel format is hardcoded** `bgra8Unorm` ([CanvasView.swift](../../Sources/Inkwell/CanvasView.swift), `colorPixelFormat`). HDR / wide-gamut presentation is a Display P3 follow-up (decision 6). Promoting to Display P3 requires a **format change, not just a color-space tag**: `bgra8Unorm` is only 8 bits per channel and cannot represent the P3 gamut at full precision without quantization. The correct target is `bgr10a2Unorm` (10-bit HDR-range wide-gamut) or `rgba16Float`, combined with `MTKView.colorspace = CGColorSpace(name: .displayP3)`. Without the format change, tagging the drawable P3 would silently quantize P3-gamut colors to sRGB fidelity.
 - **Vector debug overlay is debug-only.** Cyan polyline + orange nodes are not styled for production; expect to redo the visual when this becomes a user-facing feature.

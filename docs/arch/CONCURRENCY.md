@@ -26,6 +26,8 @@ Inkwell uses a **four-actor threading model** with clear ownership boundaries:
 
 **Concurrency primitives.** Actors are used for high-level coordination (e.g. document lifecycle, autosave scheduling) where `async/await` ergonomics help. Latency-critical inner loops (the stroke thread's per-sample work, the compositor's per-frame setup) use serial `DispatchQueue` and `OSAllocatedUnfairLock`-protected state — actor reentrancy across `await` points is undesirable in those paths.
 
+> **Current implementation.** The dedicated stroke thread described above **does not yet exist**. Today all work — event reception, stroke processing, stamp rasterization, undo capture, and compositor dispatch — runs on the **main thread**. The GPU runs asynchronously as Metal manages; autosave uses `NSDocument`'s standard background-save path. The architecture invariant ("only one thread mutates the document") is preserved trivially because there is only one mutating thread. See [`THREADING_MODEL.md`](../../THREADING_MODEL.md) for the shipping reality and the rules new code must follow so the future stroke-thread split is non-disruptive.
+
 ### Context
 
 By this point in the architecture, several earlier decisions have set hard constraints on the threading model:

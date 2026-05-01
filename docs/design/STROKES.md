@@ -111,7 +111,7 @@ Each branch wraps its work in a `beginBatch()` / `commitBatch()` pair on the app
 
 The emitter walks the path between raw stylus samples and emits stamps at fixed canvas-pixel spacing. Implementation details:
 
-- **Catmull-Rom curve** between samples — fast strokes whose samples land sparsely don't appear as polyline corners.
+- **Catmull-Rom tangent-based segment shaping** between samples — the densifier uses Catmull-Rom tangents with a one-sample lookahead to shape each segment for C1 continuity. This is not a full Catmull-Rom spline (which would require both forward neighbors before drawing any part of a segment) but a per-segment evaluation using the same tangent math, so rendering proceeds immediately. Fast strokes whose raw samples land sparsely don't appear as polyline corners.
 - **One-sample lookahead.** A segment from `samples[i]` to `samples[i+1]` is drawn only after `samples[i+2]` arrives, so the curve has both shaping neighbors. The final segment of a stroke is flushed in `end(_:)` with the last sample duplicated as the ghost lookahead.
 - **Sub-sample stepping.** Each segment is subdivided based on chord length (more sub-steps for longer/faster segments). Stamps land at `brush.spacing * brush.radius * 2` pixel intervals, with `nextStampOffset` carried across segments so spacing is continuous.
 - The dispatch closure is set by the caller — typically `CanvasView.dispatchSample(_:)`, which builds a `StampDispatch` and calls `StampRenderer.applyStamp`.

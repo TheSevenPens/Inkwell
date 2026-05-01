@@ -139,7 +139,7 @@ At the bottom of the canvas:
 - Per-stroke and per-mask-stroke undo steps. Image transforms clear the undo stack (per-tile snapshots from before a transform may reference coords that no longer exist).
 - Continuous gestures (the brush stroke as a whole) are coalesced into one step.
 
-**Deferred:** full document-lifetime history persistence (the undo stream isn't yet written to the bundle); document-level undo for image transforms; selection-state undo.
+**Deferred:** full document-lifetime history persistence (the undo stream isn't yet written to the bundle); document-level undo for image transforms.
 
 ## Held-modifier tool switches
 

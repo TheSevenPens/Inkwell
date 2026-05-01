@@ -28,6 +28,12 @@ Selections in Inkwell are represented as a **raster alpha mask** stored in the s
 - **Constraint application.** A selection is enforced in the GPU compositor by **multiplying the operation's alpha by the selection mask alpha** at each pixel. This applies uniformly to every operation that writes pixels: brush stamps, fills, transforms, filters, paint-bucket. The constraint is a single extra texture read in the relevant shader, not a per-operation code path.
 - **Persistence.** The active selection (raster mask, optional vector path, feather amount) is saved with the document. Closing and reopening preserves the in-progress selection.
 
+> **Implementation status (as of Phase 11).** The v1 shipped toolset is a **subset** of the full decision above.
+>
+> **Shipped:** rectangle, ellipse, and freehand lasso tools; selection arithmetic (Shift / Option / Shift+Option modifiers); anti-aliased edges; marching-ants animated Metal overlay; constraint application in all three stamp pipelines (normal / erase / mask); selection persistence in the bundle (`selection.bin`); Select All (Cmd+A), Deselect (Cmd+D), Invert Selection (Cmd+Shift+I); all selection-mutating ops on the undo stack via `Document.registerSelectionUndo`.
+>
+> **Not yet shipped:** polygonal lasso; magic wand; color range; Quick Mask mode; floating-selection transforms; per-selection feather slider; vector path retention for shape selections. Gaps are tracked in [`FUTURES.md`](../FUTURES.md) under "Phase 7 Pass 2."
+
 ### Context
 
 Selections touch nearly every other operation in a paint app — brush, fill, transform, filter, layer ops, copy/paste. Their representation has to be cheap to apply per-pixel (the brush engine consults it on every stamp) and rich enough to support the full pro toolset (shape, freehand, color-based). The right answer here is well-established by prior art; the decision is mostly about making sure our specific implementation respects the constraints set by earlier decisions (tile-based rendering, GPU composition, single-stroke-thread mutation).

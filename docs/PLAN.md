@@ -168,7 +168,7 @@ Pass-2 deferrals are tracked in [`FUTURES.md`](FUTURES.md). Architectural decisi
 - Quick Mask mode.
 - Floating-selection transforms (move / scale / rotate).
 - Per-selection feather slider.
-- Selection-state undo (selection edits are not yet on the undo stack).
+- ~~Selection-state undo (selection edits are not yet on the undo stack).~~ **Shipped:** all selection-mutating ops (rect / ellipse / lasso commit, Select All, Deselect, Invert Selection) are now on the undo stack via `Document.registerSelectionUndo`.
 - Vector path retention for shape selections.
 
 ---
